@@ -1,0 +1,32 @@
+# Ignore all files unless allowed below.
+*
+!*/
+
+# Repository files.
+!/.gitignore
+!/README.md
+!/version.txt
+
+# README images.
+!/images/*.png
+!/images/*.gif
+
+# Game source.
+!/src/*.c
+!/src/*.h
+
+# Game and installer build scripts.
+!/build-trbeyond.ps1
+!/build-setup.ps1
+!/tools/build-version.ps1
+
+# Installer and original-game asset import.
+!/tools/setup_wizard.py
+!/tools/setup_import.py
+!/tools/prepare_movies.py
+!/tools/inspect_reference.py
+
+# OpenXR dependency and required licence.
+!/third_party/openxr/include/openxr/*.h
+!/third_party/openxr/bin/openxr_loader.dll
+!/third_party/openxr/LICENSE
