@@ -38,6 +38,7 @@ static int lighting_program(void){
         /* Perspective interpolation can put constant shades just below an exact
            palette boundary. Bias by 0.00256 shade units (one unit is 1/256 row),
            well below the original integer precision, before truncating. */
+        "if(material==-4){vec4 c=texture2D(indices,gl_TexCoord[0].xy);c.rgb=clamp(c.rgb*max(0.0,2.0*(1.0-shade)),0.0,1.0);if(water!=0)c.rg*=2.0/3.0;gl_FragColor=c;return;}if(material==-5){gl_FragColor=vec4(texture2D(indices,gl_FragCoord.xy/screen_size).rgb*0.5,1.0);return;}"
         "float row=clamp(floor(shade*32.0+0.00001),0.0,31.0);vec3 rgb=texture2D(shades,vec2((i+0.5)/256.0,(row+0.5)/32.0)).rgb;"
         "if(water!=0)rgb.rg=floor(floor(floor(rgb.rg*63.0+0.5)*2.0/3.0)*255.0/63.0)/255.0;gl_FragColor=vec4(rgb,(material<0 && i<0.5)?0.0:1.0);}"};
     for(int pickup=0;pickup<2;pickup++){
@@ -64,7 +65,8 @@ static void lighting_textures(void){
     for(size_t i=0;i<visual->tile_count;i++){
         glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count+i]);
         glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
-        glTexImage2D(GL_TEXTURE_2D,0,GL_LUMINANCE8,256,256,0,GL_LUMINANCE,GL_UNSIGNED_BYTE,visual->tiles+i*65536);
+        if(visual->rgba_tiles)glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,256,256,0,GL_RGBA,GL_UNSIGNED_BYTE,visual->rgba_tiles+i*65536*4);
+        else glTexImage2D(GL_TEXTURE_2D,0,GL_LUMINANCE8,256,256,0,GL_LUMINANCE,GL_UNSIGNED_BYTE,visual->tiles+i*65536);
     }
     unsigned char rgb[8192*3];const unsigned char *map=visual->level->file_data+visual->level->item_parsed_bytes;
     for(int i=0;i<8192;i++)for(int c=0;c<3;c++)rgb[3*i+c]=(unsigned char)(visual->palette[(i%256?map[i]:0)*3+c]*255/63);

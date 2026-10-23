@@ -12,17 +12,8 @@ static int frontend_assets(void){
  TombLevel *saved_level=level;TombVisual *saved_visual=visual;GLuint *saved_tiles=tiles,*saved_font=font_tiles;
  level=title_level;visual=title_visual;int ok=make_tiles();title_tiles=tiles;title_font_tiles=font_tiles;
  level=saved_level;visual=saved_visual;tiles=saved_tiles;font_tiles=saved_font;if(!ok)return 0;
- asset_path(path,"TITLEH.PCX");FILE *f=fopen(path,"rb");if(!f)return 0;
- unsigned char header[128],palette[768];if(fread(header,1,128,f)!=128 || header[0]!=10 || header[3]!=8 || header[65]!=1){fclose(f);return 0;}
- int w=u16(header+8)-u16(header+4)+1,h=u16(header+10)-u16(header+6)+1,stride=u16(header+66);
- if(w!=640 || h!=480 || stride<w || stride>2048 || fseek(f,-768,SEEK_END) || fread(palette,1,768,f)!=768 || fseek(f,128,SEEK_SET)){fclose(f);return 0;}
- unsigned char *rgb=calloc(1024*512,3);if(!rgb){fclose(f);return 0;}
- int remaining=0,value=0;
- for(int y=0;y<h && ok;y++)for(int x=0;x<stride;x++){
-  if(!remaining){value=fgetc(f);if(value<0){ok=0;break;}if((value&192)==192){remaining=value&63;value=fgetc(f);if(!remaining || value<0){ok=0;break;}}else remaining=1;}
-  remaining--;if(x<w)memcpy(rgb+((size_t)y*1024+x)*3,palette+value*3,3);
- }
- fclose(f);if(ok){glGenTextures(1,&title_backdrop);glBindTexture(GL_TEXTURE_2D,title_backdrop);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);}free(rgb);return ok;
+ asset_path(path,"TITLEH.PCX");unsigned char *rgb=tomb_picture_load(path);if(!rgb)return 0;
+ glGenTextures(1,&title_backdrop);glBindTexture(GL_TEXTURE_2D,title_backdrop);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);free(rgb);return 1;
 }
 static void frontend_backdrop(void){
  glEnable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);glBindTexture(GL_TEXTURE_2D,title_backdrop);glColor3f(1,1,1);
@@ -252,16 +243,18 @@ static void frontend_inventory_backdrop(void){
  if(xr.panel_drawing)return;
  int cinema=objects.progress->complete && cinematic_pixels;
  const unsigned char *palette=cinema?cinematic_palette:visual->palette;
- static GLuint texture;static unsigned char *indices,*rgb;static int w,h,pw,ph,shade=-1;
+ static GLuint texture;static unsigned char *indices,*rgb,*original;static int w,h,pw,ph,shade=-1;
+ int full_colour=visual->rgba_tiles!=NULL;
  if(w!=width || h!=height || backdrop_dirty){
-  free(indices);free(rgb);w=width;h=height;pw=ph=1;while(pw<w)pw*=2;while(ph<h)ph*=2;
+  free(indices);free(rgb);free(original);original=NULL;w=width;h=height;pw=ph=1;while(pw<w)pw*=2;while(ph<h)ph*=2;
   indices=malloc((size_t)w*h);rgb=calloc((size_t)pw*ph,3);unsigned char *pixels=malloc((size_t)w*h*3);
   if(!indices || !rgb || !pixels){free(pixels);return;}
   unsigned char lut[32768];
-  for(int key=0;key<32768;key++){int best=0,dist=INT_MAX;for(int i=0;i<256;i++){int d=0;for(int c=0;c<3;c++){int value=((key>>(10-c*5))&31)*255/31-palette[i*3+c]*255/63;d+=value*value;}if(d<dist){dist=d;best=i;}}lut[key]=(unsigned char)best;}
+  if(!full_colour)for(int key=0;key<32768;key++){int best=0,dist=INT_MAX;for(int i=0;i<256;i++){int d=0;for(int c=0;c<3;c++){int value=((key>>(10-c*5))&31)*255/31-palette[i*3+c]*255/63;d+=value*value;}if(d<dist){dist=d;best=i;}}lut[key]=(unsigned char)best;}
   glPixelStorei(GL_PACK_ALIGNMENT,1);if(cinema){for(int y=0;y<h;y++)for(int x=0;x<w;x++)memcpy(pixels+((size_t)y*w+x)*3,cinematic_pixels+((size_t)(y*cinematic_height/h)*cinematic_width+x*cinematic_width/w)*3,3);}
   else glReadPixels(0,0,w,h,GL_RGB,GL_UNSIGNED_BYTE,pixels);
-  for(size_t n=0;n<(size_t)w*h;n++)indices[n]=lut[((pixels[n*3]>>3)<<10)|((pixels[n*3+1]>>3)<<5)|(pixels[n*3+2]>>3)];free(pixels);
+  if(full_colour)original=pixels;
+  else {for(size_t n=0;n<(size_t)w*h;n++)indices[n]=lut[((pixels[n*3]>>3)<<10)|((pixels[n*3+1]>>3)<<5)|(pixels[n*3+2]>>3)];free(pixels);}
   if(!texture)glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
   glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,pw,ph,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);shade=-1;backdrop_dirty=0;
  }
@@ -269,7 +262,8 @@ static void frontend_inventory_backdrop(void){
  int row=objects.progress->complete?24:backdrop_shade/2;
  glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,texture);
  if(shade!=row){const unsigned char *light=cinema?cinematic_light:level->file_data+level->item_parsed_bytes+row*256;
-  for(int y=0;y<h;y++)for(int x=0;x<w;x++){int index=indices[y*w+x];if(row!=16)index=frontend_dark_index(palette,light,index);for(int c=0;c<3;c++)rgb[((size_t)y*pw+x)*3+c]=(unsigned char)(palette[index*3+c]*255/63);}
+  if(full_colour && original){for(int y=0;y<h;y++)for(int x=0;x<w;x++)for(int c=0;c<3;c++)rgb[((size_t)y*pw+x)*3+c]=(unsigned char)(original[((size_t)y*w+x)*3+c]*(32-row)/16);}
+  else for(int y=0;y<h;y++)for(int x=0;x<w;x++){int index=indices[y*w+x];if(row!=16)index=frontend_dark_index(palette,light,index);for(int c=0;c<3;c++)rgb[((size_t)y*pw+x)*3+c]=(unsigned char)(palette[index*3+c]*255/63);}
   glPixelStorei(GL_UNPACK_ALIGNMENT,1);glTexSubImage2D(GL_TEXTURE_2D,0,0,0,pw,ph,GL_RGB,GL_UNSIGNED_BYTE,rgb);shade=row;
  }
  glColor3f(1,1,1);glBegin(GL_QUADS);glTexCoord2f(0,(float)h/ph);glVertex2i(0,0);glTexCoord2f((float)w/pw,(float)h/ph);glVertex2i(w,0);glTexCoord2f((float)w/pw,0);glVertex2i(w,h);glTexCoord2f(0,0);glVertex2i(0,h);glEnd();glDisable(GL_TEXTURE_2D);
@@ -278,7 +272,7 @@ static void frontend_inventory_backdrop(void){
    Quantize the small RGB panel region to the supplied palette for that lookup. */
 static void frontend_panel_shade(int x,int y,int w,int h) {
  static unsigned char lut[32768],palette[768];static int valid;static GLuint texture;
- if(!valid || memcmp(palette,visual->palette,sizeof palette)) {
+ if(!visual->rgba_tiles && (!valid || memcmp(palette,visual->palette,sizeof palette))) {
   memcpy(palette,visual->palette,sizeof palette);valid=1;
   for(int key=0;key<32768;key++){int best=0,dist=INT_MAX;for(int n=0;n<256;n++){int d=0;for(int c=0;c<3;c++){int delta=((key>>(10-5*c))&31)*255/31-palette[3*n+c]*255/63;d+=delta*delta;}if(d<dist){dist=d;best=n;}}lut[key]=(unsigned char)best;}
  }
@@ -290,7 +284,8 @@ static void frontend_panel_shade(int x,int y,int w,int h) {
  glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(x,height-y-h,w,h,GL_RGB,GL_UNSIGNED_BYTE,pixels);
  const TombLevel *panel_level=visual->level;
  const unsigned char *light=panel_level->file_data+panel_level->item_parsed_bytes+24*256;
- for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++){const unsigned char *p=pixels+((size_t)yy*w+xx)*3;int index=frontend_dark_index(palette,light,lut[((p[0]>>3)<<10)|((p[1]>>3)<<5)|(p[2]>>3)]);for(int c=0;c<3;c++)rgb[((size_t)yy*pw+xx)*3+c]=(unsigned char)(palette[index*3+c]*255/63);}
+ if(visual->rgba_tiles){for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++)for(int c=0;c<3;c++)rgb[((size_t)yy*pw+xx)*3+c]=pixels[((size_t)yy*w+xx)*3+c]/2;}
+ else for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++){const unsigned char *p=pixels+((size_t)yy*w+xx)*3;int index=frontend_dark_index(palette,light,lut[((p[0]>>3)<<10)|((p[1]>>3)<<5)|(p[2]>>3)]);for(int c=0;c<3;c++)rgb[((size_t)yy*pw+xx)*3+c]=(unsigned char)(palette[index*3+c]*255/63);}
  if(!texture)glGenTextures(1,&texture);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
  glPixelStorei(GL_UNPACK_ALIGNMENT,1);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,pw,ph,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);glColor3f(1,1,1);
  glBegin(GL_QUADS);glTexCoord2f(0,(float)h/ph);glVertex2i(x,y);glTexCoord2f((float)w/pw,(float)h/ph);glVertex2i(x+w,y);glTexCoord2f((float)w/pw,0);glVertex2i(x+w,y+h);glTexCoord2f(0,0);glVertex2i(x,y+h);glEnd();glDisable(GL_TEXTURE_2D);free(pixels);free(rgb);

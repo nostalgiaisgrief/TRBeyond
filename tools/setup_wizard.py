@@ -55,7 +55,7 @@ class Wizard:
         for child in self.body.winfo_children(): child.destroy()
         self.back.configure(state='normal' if self.page in (1, 2) else 'disabled')
         updating = self.kind.get() == 'update'
-        self.dos_enabled.set(0 if updating else 1)
+        self.dos_enabled.set(1 if self.kind.get() in ('cue', 'gog') else 0)
         self.next.configure(text=('Update' if updating else 'Install') if self.page == 2 else 'Finish' if self.page == 4 else 'Next', state='disabled' if self.page == 3 else 'normal')
         headings = ('Choose an installation folder', 'Locate your original game data',
                     'Ready to update' if updating else 'Ready to install',
@@ -87,10 +87,10 @@ class Wizard:
                             value='update', command=self.clear_source).pack(anchor='w', pady=(0, 12))
             row = ttk.Frame(self.body); row.pack(anchor='w', pady=(0, 12))
             ttk.Checkbutton(row, text='DOS / Steam / GOG', variable=self.dos_enabled, state='disabled').pack(side='left')
-            ttk.Checkbutton(row, text='PS1 — coming later', state='disabled').pack(side='left', padx=18)
             ttk.Checkbutton(row, text='Remaster — coming later', state='disabled').pack(side='left')
             ttk.Radiobutton(self.body, text='DOS CD image (.cue and its associated .bin files)', variable=self.kind, value='cue', command=self.clear_source).pack(anchor='w', pady=4)
             ttk.Radiobutton(self.body, text='Steam/GOG installation folder (GAME.GOG and music files)', variable=self.kind, value='gog', command=self.clear_source).pack(anchor='w', pady=4)
+            ttk.Radiobutton(self.body, text='PS1 CD image (.cue and its associated .bin files)', variable=self.kind, value='ps1', command=self.clear_source).pack(anchor='w', pady=4)
             row = ttk.Frame(self.body); row.pack(fill='x', pady=12)
             ttk.Entry(row, textvariable=self.selected).pack(side='left', fill='x', expand=True)
             ttk.Button(row, text='Browse…', command=self.browse_source).pack(side='right', padx=(8, 0))
@@ -102,9 +102,11 @@ class Wizard:
                 self.label('Installation found. Ready to Update.')
                 self.label('Runtime files will be updated. Existing game data, settings and saves will be kept.')
             else:
-                self.label(f'DOS source:\n{self.selected.get()}')
+                edition = 'PS1' if self.kind.get() == 'ps1' else 'DOS'
+                self.label(f'{edition} source:\n{self.selected.get()}')
                 self.label('Required files found. Ready to Install.')
-                self.label('Allow several minutes for movie conversion. At least 2 GB of free space is required.')
+                space = 10 if self.kind.get() == 'ps1' else 2
+                self.label(f'Allow several minutes for movie conversion. At least {space} GB of free space is required.')
         elif self.page == 3:
             self.progress = ttk.Progressbar(self.body, maximum=100); self.progress.pack(fill='x', pady=18)
             ttk.Label(self.body, textvariable=self.status, wraplength=630).pack(anchor='w')
@@ -131,8 +133,9 @@ class Wizard:
     def browse_source(self):
         if self.kind.get() == 'update':
             selected = filedialog.askdirectory(title='Select the Tomb Raider Beyond installation folder')
-        elif self.kind.get() == 'cue':
-            selected = filedialog.askopenfilename(title='Select the DOS Tomb Raider CUE file', filetypes=[('CD cue sheet', '*.cue')])
+        elif self.kind.get() in ('cue', 'ps1'):
+            edition = 'PS1' if self.kind.get() == 'ps1' else 'DOS'
+            selected = filedialog.askopenfilename(title=f'Select the {edition} Tomb Raider CUE file', filetypes=[('CD cue sheet', '*.cue')])
         else:
             selected = filedialog.askdirectory(title='Select the folder containing GAME.GOG and music tracks')
         if selected: self.selected.set(selected)

@@ -8,6 +8,7 @@ typedef struct TombProgress {
     int complete,lara_state;
 } TombProgress;
 TOMB_EXPORT void tomb_progress_action(TombProgress *,int action,int value,uint16_t flags,int type);
+TOMB_EXPORT void tomb_progress_action_source(TombProgress *,int action,int value,uint16_t flags,int type,int ps1);
 /* Physical DOS playback mapping: -1 ignored, 0 stop, >0 CD track,
    -2 embedded effect 173 (secret), -3 embedded track+148 sound. */
 TOMB_EXPORT int tomb_music_source(int track);

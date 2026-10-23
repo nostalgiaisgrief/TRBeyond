@@ -184,6 +184,11 @@ TombVisual *tomb_visual_load(const TombLevel *l,char *error,size_t cap)
     r.at=l->item_parsed_bytes; take(&r,1,8192); v->palette=take(&r,256,3); if(r.bad) goto fail;
     /* DOS palette loader 1f078..1f084 forces index zero to black. */
     memcpy(v->display_palette,v->palette,768);memset(v->display_palette,0,3);v->palette=v->display_palette;
+    if(l->asset.edition==2){
+        TombAssetSpan span=l->asset.span[BA_TEXC];Read pixels={l->file_data,span.offset+span.size,span.offset,0};
+        v->tile_count=count(&pixels,4);v->rgba_tiles=take(&pixels,v->tile_count,256*256*4);
+        if(pixels.bad || pixels.at!=pixels.n || !v->tile_count)goto fail;
+    }
     for(size_t i=0;i<v->texture_count;++i) if((u16(v->textures+i*20+2)&32767)>=v->tile_count) goto fail;
     for(size_t i=0;i<v->sprite_texture_count;++i) if(u16(v->sprite_textures+i*16)>=v->tile_count) goto fail;
     for(size_t i=0;i<l->static_def_count;++i) if(l->static_defs[i].mesh>=v->mesh_count) goto fail;

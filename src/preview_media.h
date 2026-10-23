@@ -77,6 +77,7 @@ static int media_audio_check(void){
     media_audio_close(&audio);return ok;
 }
 static int play_movie(const char *name,int test){
+    if(source_selected==0){if(!strcmp(name,"ESCAPE"))return 1;if(!strcmp(name,"CORE"))name="CORELOGO";}
     char path[MAX_PATH],relative[80];snprintf(relative,sizeof relative,"FMV/%s.bmv",name);media_path(path,relative);
     TombMovie movie;if(!tomb_movie_open(&movie,path)){if(!test)MessageBoxA(WindowFromDC(wglGetCurrentDC()),"Movie unavailable. Prepare the original FMV assets with tools/prepare_movies.py.","Tomb Raider Beyond",MB_OK|MB_ICONWARNING);return 0;}
     MediaAudio audio={0};int ok=1;
@@ -96,7 +97,7 @@ static int play_movie(const char *name,int test){
         if(frame!=previous){if(!tomb_movie_frame(&movie,frame)){ok=0;break;}glBindTexture(GL_TEXTURE_2D,texture);glPixelStorei(GL_UNPACK_ALIGNMENT,1);glTexSubImage2D(GL_TEXTURE_2D,0,0,0,(GLsizei)movie.width,(GLsizei)movie.height,GL_RGB,GL_UNSIGNED_BYTE,movie.pixels);previous=frame;}
         light_UseProgram(0);glDisable(GL_DEPTH_TEST);glDisable(GL_ALPHA_TEST);glDisable(GL_SCISSOR_TEST);glViewport(0,0,width,height);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
         int vw=width,vh=width*3/4;if(vh>height){vh=height;vw=height*4/3;}/* DOS mode 1 doubles source pixels inside its 640x480 canvas. */
-        vw=vw*(int)movie.width/320;vh=vh*(int)movie.height/240;glViewport((width-vw)/2,(height-vh)/2,vw,vh);
+        if(source_selected!=0){vw=vw*(int)movie.width/320;vh=vh*(int)movie.height/240;}glViewport((width-vw)/2,(height-vh)/2,vw,vh);
         glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,1,1,0,-1,1);glMatrixMode(GL_MODELVIEW);glLoadIdentity();glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,texture);glColor3f(1,1,1);
         float u=(float)movie.width/pw,v=(float)movie.height/ph;
         glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2f(0,0);glTexCoord2f(u,0);glVertex2f(1,0);glTexCoord2f(u,v);glVertex2f(1,1);glTexCoord2f(0,v);glVertex2f(0,1);glEnd();
@@ -140,7 +141,8 @@ static int play_cutscene_sequence(int test,int number){
     }
     unsigned char *wav=NULL,*last_frame_pixels=NULL;MediaAudio audio={0};int ok=1;
     if(!test){
-        snprintf(name,sizeof name,"audio/cd%02d.wav",number==1?8:number==2?10:number==3?9:7);media_path(path,name);FILE *f=fopen(path,"rb");long bytes=0;if(f){if(!fseek(f,0,SEEK_END))bytes=ftell(f);rewind(f);if(bytes>0 && bytes<100000000)wav=malloc((size_t)bytes);if(wav && fread(wav,1,(size_t)bytes,f)!=(size_t)bytes){free(wav);wav=NULL;}fclose(f);}
+        int cd=number==1?8:number==2?10:number==3?9:7;if(source_selected==0)cd+=15;
+        snprintf(name,sizeof name,"audio/cd%02d.wav",cd);media_path(path,name);FILE *f=fopen(path,"rb");long bytes=0;if(f){if(!fseek(f,0,SEEK_END))bytes=ftell(f);rewind(f);if(bytes>0 && bytes<100000000)wav=malloc((size_t)bytes);if(wav && fread(wav,1,(size_t)bytes,f)!=(size_t)bytes){free(wav);wav=NULL;}fclose(f);}
         TombSoundSample sample;if(!wav || !tomb_sound_sample(&sample,wav,(size_t)bytes) || !media_audio_open(&audio,sample.pcm,(unsigned)(sample.frames*sample.channels*sample.bits/8),sample.rate,sample.channels,sample.bits))ok=0;
     }
     TombLevel *old_level=level;TombVisual *old_visual=visual;TombObjects old_objects=objects;TombPlaytest old_play=play;TombFollowCamera old_camera=camera;
@@ -207,17 +209,9 @@ static int play_ending(int test){
     if(!test && !play_movie("END",0))return 0;
     const char *names[]={"END.PCX","CRED1.PCX","CRED2.PCX","CRED3.PCX"};
     HDC dc=wglGetCurrentDC();HWND window=WindowFromDC(dc);media_begin();int ok=1;
-    for(int page=0;page<4 && running && ok;page++){
-        char path[MAX_PATH];asset_path(path,names[page]);FILE *file=fopen(path,"rb");if(!file){ok=0;break;}
-        unsigned char header[128],palette[768];
-        if(fread(header,1,128,file)!=128 || header[0]!=10 || header[3]!=8 || header[65]!=1 || u16(header+8)-u16(header+4)!=639 || u16(header+10)-u16(header+6)!=479 || u16(header+66)<640 || u16(header+66)>2048 || fseek(file,-768,SEEK_END) || fread(palette,1,768,file)!=768 || fseek(file,128,SEEK_SET)){fclose(file);ok=0;break;}
-        unsigned char *rgb=calloc(1024*512,3);if(!rgb){fclose(file);ok=0;break;}
-        int remaining=0,value=0,stride=u16(header+66);
-        for(int y=0;y<480 && ok;y++)for(int x=0;x<stride;x++){
-            if(!remaining){value=fgetc(file);if(value<0){ok=0;break;}if((value&192)==192){remaining=value&63;value=fgetc(file);if(!remaining || value<0){ok=0;break;}}else remaining=1;}
-            --remaining;if(x<640)memcpy(rgb+((size_t)y*1024+x)*3,palette+value*3,3);
-        }
-        fclose(file);GLuint texture=0;glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);free(rgb);
+    for(int page=0;page<(source_selected==0?2:4) && running && ok;page++){
+        char path[MAX_PATH];asset_path(path,names[page]);unsigned char *rgb=tomb_picture_load(path);if(!rgb){ok=0;break;}
+        GLuint texture=0;glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);free(rgb);
         LARGE_INTEGER frequency,last,now;QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&last);double elapsed=0;int active=-1;MediaAudio silent={0};media_skip=0;
         while(ok && running && elapsed<15){
             if(!test && !media_messages(&silent,window,&active))break;

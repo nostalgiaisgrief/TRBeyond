@@ -871,7 +871,7 @@ int tomb_playtest_tick(TombPlaytest *p,uint32_t input) {
             if(ok && !(p->shooter.mode==TOMB_MODE_FPS && (trigger_type==2 || trigger_type==3)))
                 ok=tomb_objects_trigger_camera(p->objects,h.trigger_index,h.floor==a->y,p->animation.weapon_status,camera_mode);
         }
-        if(p->objects->progress->secret_serial!=secret_before)sound_request(p,5,173,2,&p->lara.actor);
+        if(p->level->asset.edition!=2 && p->objects->progress->secret_serial!=secret_before)sound_request(p,5,173,2,&p->lara.actor);
         if(!ok){p->blocked=1;p->status="Object service unavailable";}
     }
     if(ok && !p->shooter.mode && p->lara.health>0 && p->objects && !p->objects->camera.active && p->objects->camera.target>=0 && !(p->camera_request.flags&(TOMB_CAMERA_LOOK|TOMB_CAMERA_COMBAT))){

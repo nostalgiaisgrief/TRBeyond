@@ -28,6 +28,7 @@ typedef struct TombVisual {
     const unsigned char *texture_cycles;
     size_t texture_cycle_words;
     unsigned char display_palette[768];
+    const unsigned char *rgba_tiles;
 } TombVisual;
 typedef struct TombModel {
     uint32_t id,tree_word,frame_offset;

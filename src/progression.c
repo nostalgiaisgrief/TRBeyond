@@ -13,13 +13,19 @@ int tomb_music_source(int track) {
     return 0;
 }
 void tomb_progress_action(TombProgress *p,int action,int value,uint16_t flags,int type) {
+    tomb_progress_action_source(p,action,value,flags,type,0);
+}
+void tomb_progress_action_source(TombProgress *p,int action,int value,uint16_t flags,int type,int ps1) {
     if(action==7)p->complete=1;
     else if(action==10 && value>=0 && value<16) {
-        unsigned bit=1u<<value;if(!(p->secrets&bit)){p->secrets|=(uint16_t)bit;++p->secret_serial;}
+        unsigned bit=1u<<value;if(!(p->secrets&bit)){
+            p->secrets|=(uint16_t)bit;++p->secret_serial;
+            if(ps1){p->music.current_track=13;++p->music.audio_serial;}
+        }
     } else if(action==8) {
         int old=p->music.current_track;unsigned serial=p->music.audio_serial;
         tomb_gym_audio(&p->music,value,flags,type,p->lara_state);
-        if(p->music.audio_serial!=serial && p->music.current_track) {
+        if(!ps1 && p->music.audio_serial!=serial && p->music.current_track) {
             int source=tomb_music_source(p->music.current_track);
             if(source==-1 || source==-2){p->music.current_track=old;p->music.audio_serial=serial;if(source==-2)++p->secret_serial;}
         }

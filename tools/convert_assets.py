@@ -92,23 +92,26 @@ def dos_sections(data):
     return sections
 
 
-def encode(data):
-    sections = dos_sections(data)
+def encode_sections(data, sections, edition=1):
     offset = 64 + len(sections)*24
     directory, payload = bytearray(), bytearray()
     for tag, block in sections.items():
         directory += struct.pack('<4s5I', tag.encode('ascii'), 1, offset, len(block), checksum(block), 1)
         payload += block
         offset += len(block)
-    return struct.pack('<8s6I32s', MAGIC, VERSION, 0, 1, len(sections), offset, 0,
+    return struct.pack('<8s6I32s', MAGIC, VERSION, 0, edition, len(sections), offset, 0,
                        hashlib.sha256(data).digest()) + directory + payload
+
+
+def encode(data):
+    return encode_sections(data, dos_sections(data))
 
 
 def decode(data):
     if not 64 <= len(data) <= LIMIT:
         raise ValueError('Invalid Beyond level length')
     magic, major, minor, edition, count, length, flags, digest = struct.unpack_from('<8s6I32s', data)
-    if (magic, major, minor, edition, length, flags) != (MAGIC, 1, 0, 1, len(data), 0) or not 11 <= count <= 64:
+    if (magic, major, minor, length, flags) != (MAGIC, 1, 0, len(data), 0) or edition not in (1, 2) or not 11 <= count <= 64:
         raise ValueError('Unsupported Beyond level header')
     end = 64 + count*24
     if end > len(data): raise ValueError('Truncated directory')
@@ -122,11 +125,12 @@ def decode(data):
         block = data[offset:offset+size]
         if checksum(block) != crc: raise ValueError('Corrupted section')
         spans.append((offset, offset+size)); total += size
-        if tag in TAGS:
+        if tag in TAGS or tag == 'TEXC':
             if schema != 1 or tag in sections: raise ValueError('Invalid section schema or duplicate')
             sections[tag] = block
         elif required: raise ValueError('Unsupported required section')
-    if total != len(data) or set(sections) != set(TAGS): raise ValueError('Incomplete section directory')
+    expected=set(TAGS) | ({'TEXC'} if edition == 2 else set())
+    if total != len(data) or set(sections) != expected: raise ValueError('Incomplete section directory')
     return sections
 
 

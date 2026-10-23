@@ -24,6 +24,9 @@
 !/tools/setup_wizard.py
 !/tools/setup_import.py
 !/tools/convert_assets.py
+!/tools/convert_ps1.py
+!/tools/import_ps1.py
+!/tools/ps1_picture.py
 !/tools/prepare_movies.py
 !/tools/inspect_reference.py
 

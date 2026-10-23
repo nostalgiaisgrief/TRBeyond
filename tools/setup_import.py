@@ -33,9 +33,9 @@ def check_cancel(cancel):
 
 
 class Image(Disc):
-    def __init__(self, path, sector_size=2352, offset=0):
+    def __init__(self, path, sector_size=2352, offset=0, mode=1):
         self.file = Path(path).open('rb')
-        self.sector_size, self.offset = sector_size, offset
+        self.sector_size, self.offset, self.mode = sector_size, offset, mode
         self.length = os.fstat(self.file.fileno()).st_size
         try:
             pvd = self.read(16, 2048)
@@ -57,9 +57,12 @@ class Image(Disc):
             self.file.seek(at)
             raw = self.file.read(self.sector_size)
             if self.sector_size == 2352:
-                if len(raw) != 2352 or raw[:12] != b'\x00' + b'\xff' * 10 + b'\x00' or raw[15] != 1:
-                    raise ValueError('Expected a Mode 1 data sector.')
-                raw = raw[16:2064]
+                if len(raw) != 2352 or raw[:12] != b'\x00' + b'\xff' * 10 + b'\x00' or raw[15] != self.mode:
+                    raise ValueError(f'Expected a Mode {self.mode} data sector.')
+                if self.mode == 2 and (raw[16:20] != raw[20:24] or raw[18]&32):
+                    raise ValueError('Expected a Mode 2 Form 1 file sector.')
+                start=24 if self.mode==2 else 16
+                raw = raw[start:start+2048]
             result.extend(raw)
             sector += 1
         return bytes(result[:size])
@@ -94,7 +97,7 @@ class Image(Disc):
                 yield dict(path=path, sector=extent, size=count)
 
 
-def cue_tracks(cue):
+def cue_tracks(cue, ps1=False):
     tracks, binary, current = [], None, None
     for line in cue.read_text(encoding='utf-8-sig').splitlines():
         line = line.strip()
@@ -121,10 +124,10 @@ def cue_tracks(cue):
             continue
         else:
             raise ValueError(f'Unsupported CUE directive: {line}')
-    if [t['number'] for t in tracks] != list(range(1, 11)):
-        raise ValueError('Expected a Tomb Raider PC disc with tracks 1 through 10.')
-    if tracks[0]['kind'] not in ('MODE1/2352', 'MODE1/2048'):
-        raise ValueError('Expected a PC Mode 1 data track, not a PlayStation image.')
+    if [t['number'] for t in tracks] != list(range(1, 58 if ps1 else 11)):
+        raise ValueError('Unexpected Tomb Raider disc track layout.')
+    if tracks[0]['kind'] not in (('MODE2/2352',) if ps1 else ('MODE1/2352', 'MODE1/2048')):
+        raise ValueError('The disc data-track type does not match the selected source.')
     for i, track in enumerate(tracks):
         if 1 not in track['indexes'] or (i and track['kind'] != 'AUDIO'):
             raise ValueError('Missing track index or invalid audio track.')
@@ -141,6 +144,9 @@ def cue_tracks(cue):
 
 
 def inspect_source(kind, selected):
+    if kind == 'ps1':
+        from import_ps1 import inspect
+        return inspect(selected)
     selected = Path(selected).resolve()
     tracks, music = [], []
     if kind == 'cue':
@@ -290,6 +296,9 @@ def update_installation(selected, payload, progress=lambda value, text: None, ca
 
 
 def install(kind, selected, destination, payload, progress=lambda value, text: None, cancel=None):
+    if kind == 'ps1':
+        from import_ps1 import install as install_ps1
+        return install_ps1(selected, destination, payload, progress, cancel)
     if kind == 'update':
         return update_installation(selected, payload, progress, cancel)
     destination, payload = Path(destination).resolve(), Path(payload).resolve()
