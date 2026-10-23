@@ -159,13 +159,12 @@ static int body_clear(TombVr *v,TombPlaytest *p,const double origin[3],int step)
         if(water!=-32512 && pos[1]<water+50)return 0;
     }
     double standing=fmax(240,fmin(760,v->input.head.p[1]*TOMB_VR_SCALE));
-    double body=v->climb_offset<0?standing+(400-standing)*fmin(1,-v->climb_offset/fmax(1,v->input.head.p[1]*TOMB_VR_SCALE-200)):v->swimming?400:standing;
+    double body=v->climb_offset<0?standing+(240-standing)*fmin(1,-v->climb_offset/fmax(1,v->input.head.p[1]*TOMB_VR_SCALE-200)):v->swimming?400:standing;
     static const int offsets[5][2]={{0,0},{90,0},{-90,0},{0,90},{0,-90}};
     for(int j=0;j<5;j++){TombHeights h;int room;
-        if(!heights(p,pos[0]+offsets[j][0],pos[1]-body-160,pos[2]+offsets[j][1],v->level_room,&h,&room) || h.ceiling>pos[1]-body)return 0;
-        int vertical=pos[0]==v->feet[0] && pos[2]==v->feet[2];
+        if(!heights(p,pos[0]+offsets[j][0],v->climb_offset<0?pos[1]-body*.5:pos[1]-body-160,pos[2]+offsets[j][1],v->level_room,&h,&room) || h.ceiling>pos[1]-body)return 0;
         int slope=h.floor_type==1 || h.floor_type==2;
-        if((v->swimming || !j || !vertical) && h.floor<pos[1]-step-(slope?256:0))return 0;
+        if(h.floor<pos[1]-step-(slope?256:0))return 0;
     }
     if(p->level->static_def_count){
         TombActor actor=p->lara.actor;actor.x=(int)pos[0];actor.y=(int)pos[1];actor.z=(int)pos[2];actor.room=(int16_t)v->level_room;
@@ -301,6 +300,13 @@ static int ledge(TombVr *v,TombPlaytest *p,const double hand[3],TombVrHand *gras
 static int surface_grip(TombVr *v,TombPlaytest *p,const double hand[3],TombVrHand *grasp){
     if(!v->swimming && !(p->gameplay_options&TOMB_VR_CLIMB_ANYTHING))return 0;
     double head[3];tomb_vr_point(v,v->input.head.p,head);
+    /* A tracked hand can already be through a sloping ceiling. Start the
+       query in the head's room, not in the solid side of the hand's ray. */
+    TombHeights ceiling;int room;
+    if(heights(p,hand[0],head[1],hand[2],v->level_room,&ceiling,&room) && fabs(hand[1]-ceiling.ceiling)<=80){
+        double contact[3]={hand[0],ceiling.ceiling+2,hand[2]};
+        if(reachable(p,head,contact)){memcpy(grasp->anchor,hand,sizeof grasp->anchor);memset(grasp->ledge_normal,0,sizeof grasp->ledge_normal);return 1;}
+    }
     for(int ray=0;ray<7;ray++){
         double from[3],end[3];memcpy(from,hand,sizeof from);memcpy(end,hand,sizeof end);
         if(ray==0){memcpy(from,head,sizeof from);double d[3];for(int j=0;j<3;j++)d[j]=hand[j]-head[j];double n=length(d);if(n<1)continue;for(int j=0;j<3;j++)end[j]+=d[j]/n*80;}
@@ -394,7 +400,10 @@ void tomb_vr_frame(TombVr *v,TombPlaytest *p,const TombVrInput *input,double dt,
         double x=input->stick[0][0],z=input->stick[0][1],n=hypot(x,z);
         if(n>v->deadzone){double speed=fmin(1,(n-v->deadzone)/(1-v->deadzone))*(v->jumped?85:47)*30*dt;delta[0]=(cos(yaw)*x+sin(yaw)*z)/n*speed;delta[1]=0;delta[2]=(-sin(yaw)*x+cos(yaw)*z)/n*speed;move_body(v,p,delta,256);}
     }
-    int jump=input->primary[0] || input->primary[1];
+    int primary=input->primary[0] || input->primary[1];
+    if(!primary)v->menu_primary=0;
+    if(v->menu_open && primary)v->menu_primary=1;
+    int jump=primary && !v->menu_primary;
     if(jump && !v->jump_latch && !hanging && !v->swimming && !v->menu_open && grounded(v,p)){v->vertical=-108;v->jumped=1;}
     v->jump_latch=jump;
     v->sliding=0;
@@ -469,7 +478,7 @@ void tomb_vr_frame(TombVr *v,TombPlaytest *p,const TombVrInput *input,double dt,
     if(v->swimming && !anchors){
         /* Original swimming gains 2 world units/tick per tick, up to 50:
            1800 units/s^2 and 1500 units/s at 30 Hz. Physical strokes remain. */
-        double kick=v->menu_open?0:(input->primary[0] || input->primary[1]);
+        double kick=v->menu_open || v->menu_primary?0:(input->primary[0] || input->primary[1]);
         if(kick){
             double change[3];for(int j=0;j<3;j++)change[j]=1500*forward[j]-v->swim_velocity[j];
             double n=length(change),fraction=n>0?fmin(1,1800*dt/n):0;
@@ -504,8 +513,9 @@ int tomb_vr_tick(TombVr *v,TombPlaytest *p){
     if(v->pool_exit_ticks>0){a->current=55;--v->pool_exit_ticks;}
     int old_swim=p->swim_override;
     p->vr_body_bottom=v->feet[1]+body_offset(v);
-    p->vr_body_height=v->swimming || v->climb_offset<0?400:fmax(240,fmin(760,v->input.head.p[1]*TOMB_VR_SCALE));
-    int ok=tomb_playtest_tick(p,(!v->menu_open && (v->input.primary[0] || v->input.primary[1]))?16:0);
+    double standing=fmax(240,fmin(760,v->input.head.p[1]*TOMB_VR_SCALE));
+    p->vr_body_height=v->climb_offset<0?standing+(240-standing)*fmin(1,-v->climb_offset/fmax(1,v->input.head.p[1]*TOMB_VR_SCALE-200)):v->swimming?400:standing;
+    int ok=tomb_playtest_tick(p,(!v->menu_open && !v->menu_primary && (v->input.primary[0] || v->input.primary[1]))?16:0);
     v->impact=0;
     if(p->swim_override!=old_swim){v->swimming=p->swim_override>0;v->vertical=v->swim_speed=0;memset(v->swim_velocity,0,sizeof v->swim_velocity);}
     int32_t after[3]={a->x,a->y,a->z};for(int j=0;j<3;j++)v->feet[j]+=after[j]-before[j];v->level_room=p->lara.actor.room;

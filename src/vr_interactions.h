@@ -186,8 +186,12 @@ static void vr_key_release(TombVr *v,TombPlaytest *p,int h,const double point[3]
     double head[3];tomb_vr_point(v,v->input.head.p,head);
     for(size_t i=0;i<p->objects->count;i++){
         TombObject *o=p->objects->items+i;if(o->object!=key+4 || (o->actor.flags&6))continue;
-        double target[3]={o->actor.x,o->actor.y-512,o->actor.z};
-        if(distance(point,target)>220 || !reachable(p,head,target))continue;
+        int16_t bounds[6];if(!tomb_visual_item_bounds(p->visual,o->object,&o->actor,bounds))continue;
+        double angle=o->actor.yaw*(2*PI/65536),s=sin(angle),c=cos(angle),dx=point[0]-o->actor.x,dz=point[2]-o->actor.z;
+        double local[3]={c*dx-s*dz,point[1]-o->actor.y,s*dx+c*dz};
+        for(int j=0;j<3;j++)local[j]=fmax(bounds[j*2],fmin(bounds[j*2+1],local[j]));
+        double target[3]={o->actor.x+c*local[0]+s*local[2],o->actor.y+local[1],o->actor.z-s*local[0]+c*local[2]};
+        if(distance(point,target)>100 || !reachable(p,head,point))continue;
         --p->inventory.quest[slot];o->actor.flags=(o->actor.flags&~6u)|2;
         if(o->object>=118 && o->object<=121)o->object+=4;
         vr_item_trigger(p,(int)i,3);vr_sound(v,113);break;

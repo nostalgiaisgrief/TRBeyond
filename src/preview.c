@@ -802,10 +802,15 @@ static int draw_pickup_model(const TombObject *o,int16_t visual_yaw){
        !tomb_visual_key(visual,model.animation,0,&pose) || pose.count!=model.mesh_count)return 0;
     float cx=(pose.bounds[0]+pose.bounds[1])*.5f,cz=(pose.bounds[4]+pose.bounds[5])*.5f;
     float bottom=pose.bounds[3],support=(float)o->actor.y;
+    int held=-1;
+    if(play.shooter.mode==TOMB_MODE_VR && vr.ready)for(int h=0;h<2;h++){
+        int i=vr.hands[h].pickup;
+        if(i>=0 && (size_t)i<objects.count && o==objects.items+i && vr.input.hand[h].valid)held=h;
+    }
     /* A nearby slope may rise through the footprint. Use its highest corner,
        but never move floating/held pickups down to a remote floor. */
     TombSectorRef ref;TombHeights floor;
-    if(tomb_find_sector(level,o->actor.x,o->actor.y,o->actor.z,o->actor.room,&ref) &&
+    if(held<0 && tomb_find_sector(level,o->actor.x,o->actor.y,o->actor.z,o->actor.room,&ref) &&
        tomb_static_heights(level,ref,o->actor.x,o->actor.z,0,&floor) && abs(floor.floor-o->actor.y)<32){
         for(int x=0;x<2;x++)for(int z=0;z<2;z++){
             int32_t local[3]={(int32_t)(pose.bounds[x]-cx),0,(int32_t)(pose.bounds[4+z]-cz)},point[3];
@@ -815,8 +820,14 @@ static int draw_pickup_model(const TombObject *o,int16_t visual_yaw){
                tomb_static_heights(level,ref,px,pz,0,&floor) && abs(floor.floor-o->actor.y)<256 && floor.floor<support)support=(float)floor.floor;
         }
     }
-    glPushMatrix();glTranslatef((float)o->actor.x,support-2,(float)o->actor.z);
-    glRotatef(visual_yaw*(360.f/65536.f),0,1,0);
+    glPushMatrix();
+    if(held>=0){
+        double grip[16];tomb_vr_matrix(&vr,&vr.input.hand[held],grip);grip[13]+=vr.view_offset;
+        glMultMatrixd(grip);glRotated(180,1,0,0);
+        /* Centre the held model on the palm. Every mesh shares this full
+           controller transform, including wrist roll and pitch. */
+        bottom=(pose.bounds[2]+pose.bounds[3])*.5f;
+    }else{glTranslatef((float)o->actor.x,support-2,(float)o->actor.z);glRotatef(visual_yaw*(360.f/65536.f),0,1,0);}
     TombPose light_pose=pose;for(int i=0;i<6;i++)light_pose.bounds[i]=(int16_t)(pose.bounds[i]-(i<2?cx:i<4?bottom:cz));
     TombActor light_actor=o->actor;light_actor.y=(int32_t)support-2;light_actor.yaw=visual_yaw;
     /* Sprite intensity is not a model shade. Room lighting initializes all
@@ -1025,9 +1036,8 @@ static void inventory_tick(unsigned input) {
     }
     tomb_ring_compass(inventory_ring.items[0].y,play.lara.actor.yaw,&compass_angle,&compass_velocity);
     inventory_stats=inventory_ring.motion.status==8 && inventory_ring.ready && inventory_ring.items[inventory_selected].object==72;
-    int vr_confirmed=play.shooter.mode==TOMB_MODE_VR && !title_mode && !death_menu && inventory_ring.chosen>=0;
-    if(inventory_ring.motion.status!=13 && !vr_confirmed)return;
-    if(vr_confirmed){vr.menu_open=0;xr.panel_open=0;inventory_input=0;}
+    if(inventory_ring.motion.status!=13)return;
+    if(play.shooter.mode==TOMB_MODE_VR){vr.menu_primary=1;vr.menu_open=0;xr.panel_open=0;inventory_input=0;}
     int id=inventory_ring.chosen;inventory_open=inventory_stats=0;accumulator=0;
     if(id==71 || id==73){frontend_execute(id);return;}
     if(title_mode || death_menu){inventory_begin();return;}

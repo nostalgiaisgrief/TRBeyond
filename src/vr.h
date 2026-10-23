@@ -21,7 +21,7 @@ typedef struct TombVr {
     TombVrInput input;
     double yaw,last_head[3],feet[3],vertical,swim_speed,climb_offset;
     int ready,snap_latch,jump_latch,menu_latch,menu_request;
-    int level_room,swimming,menu_open;
+    int level_room,swimming,menu_open,menu_primary;
     double wrist_alpha[2];
     struct { TombCameraPoint origin; int weapon,hand; int16_t yaw,pitch; } shots[64];
     unsigned shot_count;

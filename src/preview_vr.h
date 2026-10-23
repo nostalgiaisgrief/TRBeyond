@@ -85,10 +85,18 @@ static void vr_hands_draw(void){
                 const unsigned char *b=item->vertices+n*item->vertex_stride+j*2;int value=(int16_t)(b[0]|b[1]<<8);
                 if(value<lo[j])lo[j]=value;if(value>hi[j])hi[j]=value;
             }
-            /* Seat the base in the fingers, with the item extending above the
-               hand. These offsets follow the controller as the wrist turns. */
-            glPushMatrix();glMultMatrixd(grip);glTranslated(-12,-24,-15);glScaled(.5,.5,.5);
-            glTranslated(-(lo[0]+hi[0])*.5,-lo[1],-(lo[2]+hi[2])*.5);mesh(item);glPopMatrix();
+            /* Measure the rendered hand in grip space: authored item origins
+               vary, so align its bottom to the hand rather than a fixed offset. */
+            double hand_lo[3]={1e9,1e9,1e9},hand_hi[3]={-1e9,-1e9,-1e9};
+            const TombMeshView *palm=visual->meshes+id;
+            for(unsigned n=0;n<palm->vertex_count;n++){
+                double vertex[3],world[3];for(int j=0;j<3;j++){const unsigned char *b=palm->vertices+n*palm->vertex_stride+j*2;vertex[j]=(int16_t)(b[0]|b[1]<<8);}
+                for(int j=0;j<3;j++)world[j]=matrix[12+j]-grip[12+j]+matrix[j]*vertex[0]+matrix[4+j]*vertex[1]+matrix[8+j]*vertex[2];
+                for(int j=0;j<3;j++){double a=grip[j*4]*world[0]+grip[j*4+1]*world[1]+grip[j*4+2]*world[2];hand_lo[j]=fmin(hand_lo[j],a);hand_hi[j]=fmax(hand_hi[j],a);}
+            }
+            glPushMatrix();glMultMatrixd(grip);glTranslated((hand_lo[0]+hand_hi[0])*.5,hand_lo[1],(hand_lo[2]+hand_hi[2])*.5);glScaled(.5,.5,.5);
+            glRotated(180,1,0,0);
+            glTranslated(-(lo[0]+hi[0])*.5,-hi[1],-(lo[2]+hi[2])*.5);mesh(item);glPopMatrix();
         }}
         memcpy(wrist_models[h],matrix,sizeof matrix);wrist_valid[h]=1;
     }
@@ -120,6 +128,7 @@ static void vr_hands_draw(void){
 static void vr_ring_release(const TombVrInput *input){
     if(!vr.menu_open)return;
     if(!inventory_open || title_mode || death_menu || objects.progress->complete){vr.menu_open=0;return;}
+    if(inventory_ring.chosen>=0)return;
     if(!input->head.valid || !input->hand[0].valid || input->grip[0]<.35){
         inventory_ring.sound=112;inventory_sound();
         inventory_open=inventory_stats=inventory_input=menu_action=binding_wait=0;
