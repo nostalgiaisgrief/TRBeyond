@@ -10,7 +10,7 @@ int tomb_cinematic_init(TombCinematic *c,TombObjects *w){
 }
 int tomb_cinematic_init_sequence(TombCinematic *c,TombObjects *w,int sequence){
     if(sequence<1 || sequence>4)return 0;
-    memset(c,0,sizeof *c);const TombLevel *l=w->level;size_t at=l->item_parsed_bytes+8192+768;
+    memset(c,0,sizeof *c);const TombLevel *l=w->level;size_t at=l->cinematic_offset;
     if(at>l->file_size || l->file_size-at<2)return 0;
     unsigned n=(unsigned)(uint16_t)word(l->file_data+at);at+=2;
     if(!n || n>(l->file_size-at)/16 || !w->count)return 0;

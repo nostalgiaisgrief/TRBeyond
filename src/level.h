@@ -1,5 +1,6 @@
 #ifndef TOMB_LEVEL_H
 #define TOMB_LEVEL_H
+#include "asset.h"
 #include "step.h"
 typedef struct TombSector {
     uint16_t floor_index, box;
@@ -60,6 +61,8 @@ typedef struct TombLevel {
     size_t command_count;
     unsigned char *file_data;
     size_t file_size,parsed_bytes;
+    TombAsset asset;
+    size_t cinematic_offset,sound_bank_offset,sound_sources_offset;
     TombStaticDef *static_defs;
     size_t static_def_count,static_parsed_bytes;
     TombItem *items;
@@ -73,8 +76,8 @@ typedef struct TombLevel {
     int16_t *zones; /* Ground, alternate ground, fly; then the flipped-room triple. */
     int dos_level; /* Canonical campaign index, or -1 for an unknown filename. */
 } TombLevel;
-/* Loads the TR1 prefix through item placements. Rendering meshes and
-   later sections remain in file_data but are not decoded yet. On failure returns
+/* Loads Beyond v1 or original DOS reference data, validating section bounds.
+   Rendering and sound records remain in file_data for their decoders. On failure returns
    NULL with a diagnostic, releasing every allocation. Own result with free. */
 TOMB_EXPORT TombLevel *tomb_level_load(const char *,char *error,size_t error_size);
 TOMB_EXPORT void tomb_level_free(TombLevel *);

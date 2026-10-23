@@ -222,7 +222,7 @@ int tomb_peru_lara(TombPlaytest *p,uint32_t input){
 }
 /* In-game cinematic camera 0x14fe4; frame records follow the light table/palette. */
 int tomb_scion_camera(const TombObjects *w,const int16_t *sine,TombDosCamera *camera,int *fov,int *roll){
-    const TombLevel *l=w->level;size_t at=l->item_parsed_bytes+8192+768;
+    const TombLevel *l=w->level;size_t at=l->cinematic_offset;
     if(at>l->file_size || l->file_size-at<2)return 0;
     const unsigned char *p=l->file_data+at;unsigned count=p[0]|p[1]<<8;at+=2;
     if(!count || count>(l->file_size-at)/16)return 0;

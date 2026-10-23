@@ -23,6 +23,7 @@
 # Installer and original-game asset import.
 !/tools/setup_wizard.py
 !/tools/setup_import.py
+!/tools/convert_assets.py
 !/tools/prepare_movies.py
 !/tools/inspect_reference.py
 

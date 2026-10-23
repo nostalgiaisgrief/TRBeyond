@@ -45,21 +45,13 @@ int tomb_sound_sample(TombSoundSample *out,const unsigned char *p,size_t bytes) 
 void tomb_sound_bank_free(TombSoundBank *b){if(b){free(b->details);free(b->samples);memset(b,0,sizeof *b);}}
 int tomb_sound_bank_load(TombSoundBank *b,const TombLevel *l) {
     if(!b || !l)return 0;
-    memset(b,0,sizeof *b);size_t at=l->item_parsed_bytes;const unsigned char *p;
-    /* Source placements follow object/sprite textures, sequences and cameras. */
-    size_t source_at=l->static_parsed_bytes;
-    const unsigned widths[4]={20,16,8,16};
-    for(int i=0;i<4;i++){
-        p=take(l,&source_at,1,4);if(!p)goto fail;
-        if(!take(l,&source_at,dword(p),widths[i]))goto fail;
-    }
+    memset(b,0,sizeof *b);size_t source_at=l->sound_sources_offset;const unsigned char *p;
     p=take(l,&source_at,1,4);if(!p)goto fail;b->source_count=dword(p);
     b->sources=take(l,&source_at,b->source_count,16);if(!b->sources)goto fail;
-    if(!take(l,&at,8960,1))goto fail;
-    for(unsigned width=16;width; width=width==16?1:0) {
-        p=take(l,&at,1,2);if(!p)goto fail;
-        if(!take(l,&at,word(p),width))goto fail;
-    }
+    size_t at=l->sound_bank_offset;
+    TombLevel bank_view=*l;
+    if(l->asset.version)bank_view.file_size=l->asset.span[BA_SFXB].offset+l->asset.span[BA_SFXB].size;
+    l=&bank_view;
     p=take(l,&at,256,2);if(!p)goto fail;
     for(int i=0;i<256;i++)b->map[i]=(int16_t)word(p+2*i);
     p=take(l,&at,1,4);if(!p)goto fail;b->detail_count=dword(p);

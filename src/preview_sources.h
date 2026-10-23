@@ -1,5 +1,6 @@
 /* Portable source selection. Imported sources use the runtime's normalized
-   PHD/BMV/WAV formats; raw PSX files are not yet supported by the loader. */
+   TBL/BMV/WAV formats; raw PSX files are not yet supported by the loader. */
+#include "asset.h"
 static char install_root[MAX_PATH];
 static const char *source_dirs[]={"PS1","DOS","TRR"};
 static const char *source_names[]={"PS1","DOS","Remaster"};
@@ -23,9 +24,12 @@ static int source_valid(int source){
  static const char *levels[]={"GYM","TITLE","CUT1","CUT2","CUT3","CUT4","LEVEL1","LEVEL2","LEVEL3A","LEVEL3B","LEVEL4","LEVEL5","LEVEL6","LEVEL7A","LEVEL7B","LEVEL8A","LEVEL8B","LEVEL8C","LEVEL10A","LEVEL10B","LEVEL10C"};
  char base[MAX_PATH],path[MAX_PATH];source_base(base,source);
  for(size_t i=0;i<sizeof levels/sizeof *levels;i++){
-  snprintf(path,sizeof path,"%s/DATA/%s.PHD",base,levels[i]);
-  FILE *f=fopen(path,"rb");unsigned char version[4];
-  if(!f)return 0;int ok=fread(version,1,4,f)==4 && version[0]==32 && !version[1] && !version[2] && !version[3];fclose(f);if(!ok)return 0;
+  snprintf(path,sizeof path,"%s/DATA/%s.%s",base,levels[i],source_legacy && source==1?"PHD":"TBL");
+  FILE *f=fopen(path,"rb");unsigned char version[64];
+  if(!f)return 0;size_t n=fread(version,1,sizeof version,f);fclose(f);
+  int legacy=source_legacy && source==1;
+  int ok=legacy?n>=4 && tomb_asset_u32(version)==32:n==64 && !memcmp(version,"TRBLVL\0\0",8) && tomb_asset_u32(version+8)==1 && tomb_asset_u32(version+12)==0 && tomb_asset_u32(version+16)==1;
+  if(!ok)return 0;
  }
  for(int i=0;i<2;i++){
   snprintf(path,sizeof path,"%s/%s",base,i?"AUDIO":"FMV");DWORD attr=GetFileAttributesA(path);if(attr==INVALID_FILE_ATTRIBUTES || !(attr&FILE_ATTRIBUTE_DIRECTORY))return 0;

@@ -12,6 +12,7 @@ import wave
 
 from inspect_reference import Disc
 from prepare_movies import convert
+from convert_assets import convert_level, VERSION as ASSET_VERSION
 
 LEVELS = ['GYM', 'TITLE', 'CUT1', 'CUT2', 'CUT3', 'CUT4', 'LEVEL1', 'LEVEL2',
           'LEVEL3A', 'LEVEL3B', 'LEVEL4', 'LEVEL5', 'LEVEL6', 'LEVEL7A', 'LEVEL7B',
@@ -209,7 +210,7 @@ def inspect_installation(selected):
     if marker.is_file():
         try:
             info = json.loads(marker.read_text())
-            recognized = recognized or (isinstance(info, dict) and info.get('format') == 1 and info.get('portable') is True)
+            recognized = recognized or (isinstance(info, dict) and info.get('format') in (1, 2) and info.get('portable') is True)
         except (ValueError, UnicodeError):
             pass
     if not recognized:
@@ -220,6 +221,13 @@ def inspect_installation(selected):
 def update_installation(selected, payload, progress=lambda value, text: None, cancel=None):
     """Replace only owned runtime files; roll back replacements on failure."""
     destination = inspect_installation(selected)
+    marker = destination/'trb-install.json'
+    try:
+        info = json.loads(marker.read_text())
+    except (OSError, ValueError) as error:
+        raise ValueError('This asset-format milestone requires a fresh installation.') from error
+    if info.get('asset_format') != ASSET_VERSION:
+        raise ValueError('This asset-format milestone requires a fresh installation.')
     payload = Path(payload).resolve()
     check_cancel(cancel)
     for name in RUNTIME_FILES:
@@ -299,7 +307,7 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
     try:
         source = stage/'Source'/'DOS'
         for edition in ['DOS', 'PS1', 'TRR']:
-            for folder in ['DATA', 'FMV', 'AUDIO', 'SAVES']:
+            for folder in ['DATA', 'FMV', 'AUDIO', 'SAVES', 'Original/DATA', 'Original/FMV', 'Original/AUDIO']:
                 (stage/'Source'/edition/folder).mkdir(parents=True, exist_ok=True)
         (stage/'Custom').mkdir()
         for name in RUNTIME_FILES:
@@ -309,15 +317,23 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
         try:
             for n, (name, entry) in enumerate(plan['entries'].items()):
                 check_cancel(cancel)
-                progress(5 + 25*n/len(plan['entries']), f'Extracting {name}')
-                (source/name).write_bytes(disc.read(entry['sector'], entry['size']))
+                progress(5 + 20*n/len(plan['entries']), f'Extracting {name}')
+                (source/'Original'/name).write_bytes(disc.read(entry['sector'], entry['size']))
         finally:
             disc.file.close()
+        for index, name in enumerate(LEVELS):
+            check_cancel(cancel)
+            progress(25 + 5*index/len(LEVELS), f'Converting level {name}')
+            convert_level(source/'Original'/'DATA'/f'{name}.PHD', source/'DATA'/f'{name}.TBL')
+        for name in PICTURES:
+            shutil.copy2(source/'Original'/'DATA'/f'{name}.PCX', source/'DATA'/f'{name}.PCX')
         for n in range(2, 11):
             check_cancel(cancel); progress(30 + (n-2)*2, f'Preparing music track {n:02}')
             out = source/'AUDIO'/f'cd{n:02}.wav'
             if kind == 'gog':
-                decode_audio(plan['music'][n-2], out, cancel)
+                original = source/'Original'/'AUDIO'/plan['music'][n-2].name
+                shutil.copy2(plan['music'][n-2], original)
+                decode_audio(original, out, cancel)
             else:
                 track = plan['tracks'][n-1]
                 with track['file'].open('rb') as f, wave.open(str(out), 'wb') as wav:
@@ -327,10 +343,11 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
                         check_cancel(cancel); data = f.read(min(left, 1024*1024))
                         if not data: raise ValueError('Truncated audio track.')
                         wav.writeframesraw(data); left -= len(data)
+            if kind == 'cue':
+                shutil.copy2(out, source/'Original'/'AUDIO'/out.name)
         for n, name in enumerate(MOVIES):
             check_cancel(cancel); progress(48+n*4, f'Converting movie {name} ({n+1}/{len(MOVIES)})')
-            convert(source/'FMV'/f'{name}.RPL', source/'FMV'/f'{name}.bmv', cancel=cancel)
-            (source/'FMV'/f'{name}.RPL').unlink()
+            convert(source/'Original'/'FMV'/f'{name}.RPL', source/'FMV'/f'{name}.bmv', cancel=cancel)
         check_cancel(cancel); progress(94, 'Verifying imported files')
         records = []
         for p in sorted(source.rglob('*')):
@@ -338,8 +355,8 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
                 check_cancel(cancel)
                 with p.open('rb') as f: digest = hashlib.file_digest(f, 'sha256').hexdigest()
                 records.append(dict(path=p.relative_to(source).as_posix(), bytes=p.stat().st_size, sha256=digest))
-        (source/'import-manifest.json').write_text(json.dumps(dict(edition='DOS', input_kind=kind, format=1, files=records), indent=2))
-        (stage/'trb-install.json').write_text(json.dumps(dict(format=1, portable=True, sources=['DOS'])))
+        (source/'import-manifest.json').write_text(json.dumps(dict(edition='DOS', input_kind=kind, format=2, asset_format=ASSET_VERSION, converter=1, files=records), indent=2))
+        (stage/'trb-install.json').write_text(json.dumps(dict(format=2, portable=True, asset_format=ASSET_VERSION, sources=['DOS'])))
         (stage/'settings.ini').write_text('[Game]\nsource=DOS\n')
         check_cancel(cancel)
         if destination.exists():

@@ -158,7 +158,11 @@ static void frontend_title(void);
 static void ui_text(int,int,const char *,unsigned);
 static int load_game_level(int,int,const char *);
 #include "preview_sources.h"
-static void asset_path(char *path,const char *file){char relative[100];snprintf(relative,sizeof relative,"DATA/%s",file);source_path(path,relative);}
+static void asset_path(char *path,const char *file){
+ char relative[100];snprintf(relative,sizeof relative,"DATA/%s",file);
+ size_t n=strlen(relative);if(!source_legacy && n>4 && !_stricmp(relative+n-4,".PHD"))memcpy(relative+n-4,".TBL",5);
+ source_path(path,relative);
+}
 static void save_path(char *path,int slot){
  char base[MAX_PATH],folder[MAX_PATH];
  if(front_test)snprintf(folder,sizeof folder,"%s/build/test-saves",install_root);
@@ -914,7 +918,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
        !(rects=calloc(next->room_count,sizeof *rects)) || !tomb_objects_init(&world,next,view) ||
        !tomb_playtest_init(&player,next,sine_table,view)) {
         tomb_objects_free(&world);free(rects);tomb_visual_free(view);tomb_level_free(next);
-        MessageBoxA(NULL,"Could not load the next level. Check that its PHD file is installed.","Next level",MB_ICONERROR);return 0;
+        MessageBoxA(NULL,"Could not load the next level. Check that its converted level file is installed.","Next level",MB_ICONERROR);return 0;
     }
     TombFollowCamera saved_camera={0};TombInventory saved_baseline={0};
     player.objects=&world;player.movement_only=next_number!=0;
@@ -2062,7 +2066,7 @@ int main(int argc,char **argv) {
             if(ring_sound_output && !tomb_sound_output_update(ring_sound_output,!focused))sound_failed=1;
         }
         if(!shot && (level_number==4 || level_number==9 || level_number==14) && objects.progress->complete && !cutscene_seen){
-            cutscene_seen=1;if(level_number==14)play_movie("PRISON",0);if(!play_cutscene_sequence(0,level_number==4?1:level_number==9?2:level_number==13?3:4))MessageBoxA(window,"Could not play cinematic. Check CUT1-CUT4.PHD and CD audio assets.","Tomb Raider Beyond",MB_OK|MB_ICONWARNING);
+            cutscene_seen=1;if(level_number==14)play_movie("PRISON",0);if(!play_cutscene_sequence(0,level_number==4?1:level_number==9?2:level_number==13?3:4))MessageBoxA(window,"Could not play cinematic. Check converted CUT1-CUT4 levels and audio assets.","Tomb Raider Beyond",MB_OK|MB_ICONWARNING);
             backdrop_dirty=1;QueryPerformanceCounter(&last);
         }
         if(shot) elapsed=shot_time;

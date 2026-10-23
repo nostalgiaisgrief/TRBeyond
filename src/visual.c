@@ -5,6 +5,11 @@
 #include <stdio.h>
 
 typedef struct Read { const unsigned char *p; size_t n,at; int bad; } Read;
+static void section(Read *r,const TombLevel *l,int id) {
+    if(!l->asset.version)return;
+    if(r->bad || (r->at && r->at!=r->n)){r->bad=1;return;}
+    TombAssetSpan span=l->asset.span[id];r->at=span.offset;r->n=span.offset+span.size;
+}
 static uint16_t u16(const unsigned char *p) { return (uint16_t)(p[0]|(uint16_t)p[1]<<8); }
 static uint32_t u32(const unsigned char *p) { return u16(p)|(uint32_t)u16(p+2)<<16; }
 static const unsigned char *take(Read *r,size_t n,size_t size)
@@ -117,8 +122,10 @@ TombVisual *tomb_visual_load(const TombLevel *l,char *error,size_t cap)
     if(!l || !l->file_data) goto fail;
     v=calloc(1,sizeof *v); if(!v) goto fail; v->level=l;
     Read r={l->file_data,l->file_size,0,0};
-    if(count(&r,4)!=32) goto fail;
-    v->tile_count=count(&r,4); v->tiles=take(&r,v->tile_count,65536); take(&r,1,4);
+    if(!l->asset.version && count(&r,4)!=32) goto fail;
+    section(&r,l,BA_TEX8);
+    v->tile_count=count(&r,4); v->tiles=take(&r,v->tile_count,65536); if(!l->asset.version)take(&r,1,4);
+    section(&r,l,BA_ROOM);
     v->room_count=count(&r,2); if(r.bad || v->room_count!=l->room_count) goto fail;
     v->rooms=calloc(v->room_count?v->room_count:1,sizeof *v->rooms); if(!v->rooms) goto fail;
     v->portals=calloc(v->room_count?v->room_count:1,sizeof *v->portals);if(!v->portals)goto fail;
@@ -134,7 +141,9 @@ TombVisual *tomb_visual_load(const TombLevel *l,char *error,size_t cap)
         n=count(&r,2);v->lighting[i].count=n;v->lighting[i].data=take(&r,n,18);
         n=count(&r,2); take(&r,n,18); take(&r,1,4);
     }
+    section(&r,l,BA_FLOR);
     size_t n=count(&r,4); take(&r,n,2);
+    section(&r,l,BA_MESH);
     size_t mesh_words=count(&r,4); const unsigned char *mesh_data=take(&r,mesh_words,2);
     v->mesh_count=count(&r,4); const unsigned char *pointers=take(&r,v->mesh_count,4); if(!pointers) goto fail;
     v->meshes=calloc(v->mesh_count?v->mesh_count:1,sizeof *v->meshes); if(!v->meshes) goto fail;
@@ -144,16 +153,20 @@ TombVisual *tomb_visual_load(const TombLevel *l,char *error,size_t cap)
         for(size_t j=0;j<v->mesh_count;++j) { size_t next=u32(pointers+4*j); if(next>off && next<end) end=next; }
         Read data={mesh_data+off,end-off,0,0}; if(!mesh(&data,v->meshes+i,0)) goto fail;
     }
+    section(&r,l,BA_ANIM);
     v->animation_count=count(&r,4); v->animations=take(&r,v->animation_count,32);
     n=count(&r,4); take(&r,n,6); n=count(&r,4); take(&r,n,8); n=count(&r,4); take(&r,n,2);
+    section(&r,l,BA_MODL);
     v->tree_words=count(&r,4); v->trees=take(&r,v->tree_words,4);
     v->frame_words=count(&r,4); v->frames=take(&r,v->frame_words,2);
     v->model_count=count(&r,4); v->models=take(&r,v->model_count,18);
     n=count(&r,4); take(&r,n,32);
+    section(&r,l,BA_TEXI);
     v->texture_count=count(&r,4); v->textures=take(&r,v->texture_count,20);
     v->sprite_texture_count=count(&r,4); v->sprite_textures=take(&r,v->sprite_texture_count,16);
     if(r.bad || l->item_parsed_bytes>l->file_size) goto fail;
     n=count(&r,4);take(&r,n,8); /* sprite sequences */
+    section(&r,l,BA_WRLD);
     n=count(&r,4);take(&r,n,16); /* cameras */
     n=count(&r,4);take(&r,n,16); /* sound sources */
     size_t boxes=count(&r,4);take(&r,boxes,20);
@@ -167,6 +180,7 @@ TombVisual *tomb_visual_load(const TombLevel *l,char *error,size_t cap)
         for(unsigned j=0;j<length;j++)if(count(&cycles,2)>=v->texture_count)goto fail;
     }
     if(cycles.bad || cycles.at!=cycles.n)goto fail;
+    if(l->asset.version){n=count(&r,4);take(&r,n,22);section(&r,l,BA_PALT);}
     r.at=l->item_parsed_bytes; take(&r,1,8192); v->palette=take(&r,256,3); if(r.bad) goto fail;
     /* DOS palette loader 1f078..1f084 forces index zero to black. */
     memcpy(v->display_palette,v->palette,768);memset(v->display_palette,0,3);v->palette=v->display_palette;

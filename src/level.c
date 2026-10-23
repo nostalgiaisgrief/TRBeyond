@@ -10,6 +10,11 @@ static const unsigned char *take(Reader *r,size_t count,size_t width)
     if (r->failed || !width || count>(r->size-r->pos)/width) { r->failed=1; return NULL; }
     const unsigned char *p=r->data+r->pos; r->pos+=count*width; return p;
 }
+static void section(Reader *r,const TombLevel *l,int id) {
+    if(!l->asset.version)return;
+    if(r->failed || (r->pos && r->pos!=r->size)){r->failed=1;return;}
+    TombAssetSpan span=l->asset.span[id];r->pos=span.offset;r->size=span.offset+span.size;
+}
 static uint16_t u16(const unsigned char *p) { return (uint16_t)((uint16_t)p[0]|(uint16_t)p[1]<<8); }
 static uint32_t u32(const unsigned char *p) { return (uint32_t)u16(p)|(uint32_t)u16(p+2)<<16; }
 static int16_t s16(const unsigned char *p) { return tomb_word(u16(p)); }
@@ -34,7 +39,7 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
     const char *why="invalid or truncated TR1 data";
     TombLevel *l=NULL; FILE *file=NULL;
     if (error && cap) error[0]=0;
-    if (!path || !(file=fopen(path,"rb"))) { why="cannot open PHD file"; goto fail; }
+    if (!path || !(file=fopen(path,"rb"))) { why="cannot open level file"; goto fail; }
     if (fseek(file,0,SEEK_END)) goto fail;
     long bytes=ftell(file);
     if (bytes<8 || bytes>256L*1024L*1024L || fseek(file,0,SEEK_SET)) goto fail;
@@ -43,13 +48,18 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
     const char *base=path;for(const char *p=path;*p;p++)if(*p=='/' || *p=='\\')base=p+1;
     char name[32];size_t len=strlen(base);l->dos_level=-1;
     if(len<sizeof name){for(size_t i=0;i<=len;i++)name[i]=base[i]>='a' && base[i]<='z'?(char)(base[i]-'a'+'A'):base[i];
+        if(len>4 && !strcmp(name+len-4,".TBL"))memcpy(name+len-4,".PHD",5);
         for(size_t i=0;i<sizeof names/sizeof names[0];i++)if(!strcmp(name,names[i])){l->dos_level=(int)i;break;}}
     l->file_size=(size_t)bytes; l->file_data=malloc(l->file_size);
     if(!l->file_data || fread(l->file_data,1,l->file_size,file)!=l->file_size) goto fail;
     fclose(file); file=NULL;
+    int format=tomb_asset_open(&l->asset,l->file_data,l->file_size);
+    if(format<0){why="invalid, corrupt or unsupported Beyond level";goto fail;}
     Reader r={l->file_data,l->file_size,0,0};
-    if(read_count(&r,4)!=32) { why="expected original TR1 PHD version 32"; goto fail; }
-    uint32_t n=read_count(&r,4); take(&r,n,65536); take(&r,1,4);
+    if(!format && read_count(&r,4)!=32) { why="expected original TR1 PHD version 32"; goto fail; }
+    section(&r,l,BA_TEX8);
+    uint32_t n=read_count(&r,4); take(&r,n,65536); if(!format)take(&r,1,4);
+    section(&r,l,BA_ROOM);
     l->room_count=read_count(&r,2);
     if(r.failed || !l->room_count || l->room_count>32767 || l->room_count>(r.size-r.pos)/28) goto fail;
     l->rooms=calloc(l->room_count,sizeof *l->rooms); if(!l->rooms) goto fail;
@@ -75,11 +85,14 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
         p=take(&r,1,4); if(!p) goto fail;
         room->alternate=s16(p); room->flags=s16(p+2);
     }
+    section(&r,l,BA_FLOR);
     l->floor_count=read_count(&r,4);
     const unsigned char *p=take(&r,l->floor_count,2); if(!p) goto fail;
     l->floor_data=calloc(l->floor_count?l->floor_count:1,sizeof *l->floor_data); if(!l->floor_data) goto fail;
     for(size_t i=0;i<l->floor_count;++i) l->floor_data[i]=u16(p+2*i);
+    section(&r,l,BA_MESH);
     n=read_count(&r,4); take(&r,n,2); n=read_count(&r,4); take(&r,n,4);
+    section(&r,l,BA_ANIM);
     l->animation_count=read_count(&r,4); p=take(&r,l->animation_count,32); if(!p) goto fail;
     l->animations=calloc(l->animation_count?l->animation_count:1,sizeof *l->animations); if(!l->animations) goto fail;
     for(size_t i=0;i<l->animation_count;++i,p+=32) l->animations[i]=(TombAnim){s32(p+8),s32(p+12),s16(p+6),
@@ -94,6 +107,7 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
     l->commands=calloc(l->command_count?l->command_count:1,sizeof *l->commands); if(!l->commands) goto fail;
     for(size_t i=0;i<l->command_count;++i) l->commands[i]=s16(p+2*i);
     l->parsed_bytes=r.pos;
+    section(&r,l,BA_MODL);
     n=read_count(&r,4); take(&r,n,4); /* mesh trees */
     n=read_count(&r,4); take(&r,n,2); /* animation frames */
     n=read_count(&r,4); take(&r,n,18); /* moveable models */
@@ -107,10 +121,12 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
             for(size_t j=0;j<i;++j) if(l->static_defs[j].id==s->id) goto fail;
         }
     }
+    section(&r,l,BA_TEXI);
     l->static_parsed_bytes=r.pos;
     n=read_count(&r,4); take(&r,n,20); /* object textures */
     n=read_count(&r,4); take(&r,n,16); /* sprite textures */
     n=read_count(&r,4); take(&r,n,8); /* sprite sequences */
+    section(&r,l,BA_WRLD);
     n=read_count(&r,4); l->camera_count=n; p=take(&r,n,16); if(!p)goto fail;
     if(n) {
         l->cameras=calloc(n,sizeof *l->cameras);if(!l->cameras)goto fail;
@@ -119,6 +135,7 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
             if(l->cameras[i].room<0 || (size_t)l->cameras[i].room>=l->room_count)goto fail;
         }
     }
+    l->sound_sources_offset=r.pos;
     n=read_count(&r,4); take(&r,n,16); /* sound sources */
     uint32_t boxes=read_count(&r,4); p=take(&r,boxes,20); if(!p) goto fail;
     l->box_count=boxes;
@@ -146,7 +163,15 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
             if(item->object<0 || item->room<0 || (size_t)item->room>=l->room_count) goto fail;
         }
     }
+    section(&r,l,BA_PALT);
     l->item_parsed_bytes=r.pos;
+    take(&r,8960,1);
+    section(&r,l,BA_CINE);l->cinematic_offset=r.pos;
+    n=read_count(&r,2);take(&r,n,16);n=read_count(&r,2);take(&r,n,1);
+    section(&r,l,BA_SFXB);l->sound_bank_offset=r.pos;
+    take(&r,256,2);n=read_count(&r,4);take(&r,n,8);
+    n=read_count(&r,4);take(&r,n,1);n=read_count(&r,4);take(&r,n,4);
+    if(r.failed || r.pos!=r.size)goto fail;
     for(size_t i=0;i<l->room_count;++i) {
         const TombRoom *room=l->rooms+i;
         for(size_t j=0;j<room->static_count;++j) {
