@@ -160,9 +160,10 @@ static int objects_collide(TombObjects *w,TombActor *a,TombContact *c,TombAnimCo
         for(int part=0;part<(w->items[i].object==44?2:1);part++){
         TombObject *o=w->items+i;
         if(only_object>=0 && o->object!=only_object)continue;
+        if(o->object==83 && only_object!=83)continue;
         if(o->object==145 || (w->invincible && (o->object==37 || o->object==38 || o->object==180)))continue;
         if(part){if(!tomb_folly_head(w,o,&head))return 0;o=&head;if(o->actor.current==2)continue;}
-        int enemy=tomb_enemy_object(o->object),blade=o->object==36 || o->object==42,solid=o->object==147 || o->object==161 || o->object==163 || o->object==177 || o->object==181,hazard=o->object==180 || o->object==43 || o->object==24 || o->object==37 || o->object==38 || o->object==53;
+        int enemy=tomb_enemy_object(o->object),blade=o->object==36 || o->object==42,solid=o->object==83 || o->object==147 || o->object==161 || o->object==163 || o->object==177 || o->object==181,hazard=o->object==180 || o->object==43 || o->object==24 || o->object==37 || o->object==38 || o->object==53;
         if((!enemy && !blade && !hazard && !solid && o->object!=44 && o->object!=45 && o->object!=47 && (o->object<57 || o->object>64 || !(c->flags&8))) || !(o->actor.flags&32) || (o->actor.flags&6)==6)continue;
         TombCreature *creature=enemy && w->enemies?w->enemies->items+i:NULL;
         if(o->actor.room!=room || llabs((long long)a->x-o->actor.x)>=4096 || llabs((long long)a->y-o->actor.y)>=4096 || llabs((long long)a->z-o->actor.z)>=4096)continue;
@@ -180,7 +181,7 @@ static int objects_collide(TombObjects *w,TombActor *a,TombContact *c,TombAnimCo
         }
         /* The altar and EmberEmitter use DOS ObjectCollision (16388),
            including its mesh-sphere test before the bounds push. */
-        if((solid && o->object!=147 && o->object!=177) || (o->object>=43 && o->object<=45))touching=1;
+        if((solid && o->object!=83 && o->object!=147 && o->object!=177) || (o->object>=43 && o->object<=45))touching=1;
         if(creature)creature->touch=touching;
         if(hazard){
             w->enemies->items[i].touch=touching;
@@ -215,4 +216,8 @@ int tomb_doors_collide(TombObjects *w,TombActor *a,TombContact *c,TombAnimContex
 int tomb_scion_altar_collide(TombObjects *w,TombActor *a,TombContact *c,TombAnimContext *ctx,TombQuery query,void *user) {
     int hit=0;
     return objects_collide(w,a,c,ctx,0,0,query,user,&hit,147);
+}
+int tomb_crystals_collide(TombObjects *w,TombActor *a,TombContact *c,TombAnimContext *ctx,int16_t pitch,int16_t roll,TombQuery query,void *user) {
+    int hit=0;
+    return objects_collide(w,a,c,ctx,pitch,roll,query,user,&hit,83);
 }

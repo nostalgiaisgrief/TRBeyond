@@ -39,66 +39,60 @@ As soon as the first release is up, it'll be linked here. But you could download
 ### The original, unaltered experience
 In whatever resolution and FPS your machine can muster, or keep it old school with DOS-era resolutions and FPS.
 
-![Full Resolution](images/original1.png)
 #### Full Resolution
+![Full Resolution](images/original1.png)
 
-![Full Resolution](images/original2.png)
 #### DOS "High res" mode with added widescreen
+![Full Resolution](images/original2.png)
 
-![Full Resolution](images/original3.png)
 #### DOS "Low res" mode in 4:3 ratio
-
+![Full Resolution](images/original3.png)
 
 ### Third Person Shooter Mode
 WASD movement with mouse-controlled manual aiming. The main goal was to significantly improve Tomb Raider's combat, while still keeping it close enough to feeling like a Tomb Raider game.
 
-![](images/tps1.gif)
 #### Manual mouse-driven aiming
+![](images/tps1.gif)
 
-![](images/tps2.gif)
 #### Smooth backpedalling without hopping
+![](images/tps2.gif)
 
-![](images/tps3.gif)
 #### Perform flips easily while maintaining aim
-
+![](images/tps3.gif)
 
 ### First Person Shooter Mode
 A much faster-paced game, with instant pickups and air control. Lara has twice the speed and can zip around levels. If Tomb Raider and Quake had a baby...
 
-![](images/fps1.gif)
 #### Fast movement and quick weapon switching
-
+![](images/fps1.gif)
 
 ### Immersive VR
 Every gameplay mechanic accounted for, so you never need a third-person view.
 
+#### Every mechanic has a physical VR interaction. No point-and-press-a-button here!
 | | |
 |---|---|
 | ![](images/vr1.gif) | ![](images/vr2.gif) |
 
-#### Every mechanic has a physical VR interaction. No point-and-press-a-button here!
-
+#### Mix and match weapons without a menu. Each weapon is unholstered from a different place on your body.
  ![](images/vr3.gif)
- #### Mix and match weapons without a menu. Each weapon is unholstered from a different place on your body.
-
-
+ 
+#### Easily push and pull blocks,
  | | |
 |---|---|
 | ![](images/vr4.gif) | ![](images/vr5.gif) |
 
-#### Easily push and pull blocks,
-
+#### Use natural swimming techniques to move your body in any direction in water.
 ![](images/vr6.gif)
- #### Use natural swimming techniques to move your body in any direction in water.
 
 ## Additional Customisation
 Includes a bunch of optional customisation options which can be turned on and off at will. Defaults to the pure, unaltered experience. Most of these settings can be used on any game mode.
 
-### Quality of Life
+### Enhancements
 - **Autosave**
    - Auto saves the game after key interactions (using keys, pulling switches, etc).
 - **Consistent Weapons**
-   - Real-time cutscenes will use the last weapons Lara had equipped, as well as the next level having your last used weapon equipped the start.
+   - Real-time cutscenes will use the last weapons Lara had equipped, as well as the next level having your last used weapon equipped at the start.
    ![](images/cutscene2.png)
    ![](images/cutscene3.png)
 - **3D Pickups**
@@ -124,7 +118,7 @@ Includes a bunch of optional customisation options which can be turned on and of
    - Pretty much what it says on the tin. Explore the levels like a rock climber.
 
 ## What's the plan?
-Here is the list of things current on the plan.
+Here is the list of things currently on the plan.
 
 - [x] Recreate the DOS version of Tomb Raider 1 for modern Windows
 - [x] Complete a playthrough of the Original mode
@@ -138,10 +132,10 @@ Here is the list of things current on the plan.
 - [ ] Refine VR Mode
 - [ ] Complete a VR playthrough
 - [ ] Add VR Comfort options
-
-### Future Plans
-- [ ] Add PlayStation 1 disc and TR Remastered as options to import game data from
-- [ ] Add option for PS1 musical cues
+- [x] Add asset import from DOS and PS1 game discs
+- [x] Add asset import from Steam/GOG installations
+- [x] Add option for PS1 musical cues
 - [ ] Add option for PS1 water colours (and maybe lighting)
-- [ ] Add option to use Save Crystals
+- [x] Add option to use Save Crystals
+- [ ] Improve Save Crystal look
 - [ ] Multiplayer... maybe even with mixed modes!

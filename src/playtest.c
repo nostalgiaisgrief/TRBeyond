@@ -553,7 +553,7 @@ static int playtest_tick(TombPlaytest *p,uint32_t input) {
     }
     if(p->objects && !p->blocked) {
         int hit=0;
-        if(!tomb_hazards_contact(p->objects,a,&c,&p->animation,p->lara.pitch,m->lean,query,p) || !tomb_doors_collide(p->objects,a,&c,&p->animation,p->lara.pitch,m->lean,query,p,&hit)) {p->blocked=1;p->status="Door contact unavailable";}
+        if(((p->gameplay_options&TOMB_SAVE_CRYSTALS) && !tomb_crystals_collide(p->objects,a,&c,&p->animation,p->lara.pitch,m->lean,query,p)) || !tomb_hazards_contact(p->objects,a,&c,&p->animation,p->lara.pitch,m->lean,query,p) || !tomb_doors_collide(p->objects,a,&c,&p->animation,p->lara.pitch,m->lean,query,p,&hit)) {p->blocked=1;p->status="Door contact unavailable";}
         if(hit && !p->door_hit_ticks)sound_request(p,5,27,0,a);
         p->door_hit_ticks=hit?(p->door_hit_ticks<34?p->door_hit_ticks+1:34):0;
         p->door_hit_direction=hit-1;
@@ -631,7 +631,7 @@ static int playtest_tick(TombPlaytest *p,uint32_t input) {
 }
 
 void tomb_gameplay_start(TombPlaytest *p,uint32_t options){
-    p->gameplay_options=options&(2047|TOMB_GUN_POWER_MASK|TOMB_3D_PICKUPS);
+    p->gameplay_options=options&(2047|TOMB_GUN_POWER_MASK|TOMB_3D_PICKUPS|TOMB_SAVE_CRYSTALS);
     for(int j=0;j<3;j++)if(options&(4u<<j))tomb_inventory_add(&p->inventory,85+j);
     if(p->objects)p->objects->invincible=(options&TOMB_INVINCIBLE)!=0;
     if(p->objects && !tomb_enemies_configure(p->objects,(options&TOMB_NO_ENEMIES)!=0)){p->blocked=1;p->status="Enemy removal service unavailable";}
@@ -793,6 +793,10 @@ int tomb_playtest_tick(TombPlaytest *p,uint32_t input) {
         ok=tomb_midas_sparkles(p) && tomb_animate(&p->lara.actor,&p->animation);p->status="Cinematic animation";
     }else if(p->shooter.mode==TOMB_MODE_VR){ok=gym_tick(p);if(p->lara.health<=0)++p->dead_ticks;}
     else ok=playtest_tick(p,input);
+    /* DOS LaraBaddieCollision (0x160c0) clears hit direction and hit status
+       before its dead-Lara early return. Keep the reaction frame counter;
+       direction -1 releases the pose override, including on the lethal tick. */
+    if(p->lara.health<=0){p->door_hit_direction=-1;p->lara.actor.flags&=(uint8_t)~16u;}
     if(p->objects && p->spasm_ticks>0 && p->lara.health>0){
         int index=p->spasm_effect-1;
         if(index>=0 && index<256){

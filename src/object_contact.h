@@ -16,4 +16,5 @@ struct TombPlaytest;
 int tomb_lara_gun_point(const struct TombPlaytest *,int left,int32_t out[3]);
 TOMB_EXPORT int tomb_doors_collide(TombObjects *,TombActor *,TombContact *,TombAnimContext *,int16_t pitch,int16_t roll,TombQuery,void *,int *hit);
 TOMB_EXPORT int tomb_scion_altar_collide(TombObjects *,TombActor *,TombContact *,TombAnimContext *,TombQuery,void *);
+int tomb_crystals_collide(TombObjects *,TombActor *,TombContact *,TombAnimContext *,int16_t,int16_t,TombQuery,void *);
 #endif

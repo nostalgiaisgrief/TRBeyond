@@ -27,7 +27,7 @@ int tomb_late_object_control(TombObject *o){
     }
     return 0;
 }
-int tomb_object_supported(int id){return tomb_folly_object(id) || tomb_peru_object(id) || tomb_pickup_object(id) || tomb_enemy_object(id) || id==180 || id==181 || id==177 || id==170 || id==183 || id==161 || id==163 || id==162 || id==182 || id==146 || id==147 || id==35 || id==36 || id==40 || (id>=68 && id<=70) || id==55 || id==56 || (id>=48 && id<=51) || id==41 || id==42 || id==128 || id==179 || id==65 || id==66 || (id>=118 && id<=125) || (id>=137 && id<=140) || is_door(id);}
+int tomb_object_supported(int id){return id==83 || tomb_folly_object(id) || tomb_peru_object(id) || tomb_pickup_object(id) || tomb_enemy_object(id) || id==180 || id==181 || id==177 || id==170 || id==183 || id==161 || id==163 || id==162 || id==182 || id==146 || id==147 || id==35 || id==36 || id==40 || (id>=68 && id<=70) || id==55 || id==56 || (id>=48 && id<=51) || id==41 || id==42 || id==128 || id==179 || id==65 || id==66 || (id>=118 && id<=125) || (id>=137 && id<=140) || is_door(id);}
 #define supported tomb_object_supported
 int tomb_trigger_active(TombObject *o) {
     int normal=!(o->flags&0x4000);
@@ -216,6 +216,7 @@ static int item_reset(TombObjects *w,size_t i) {
     o->flags=p->flags;
     if(o->flags&0x100){o->flags&=(uint16_t)~0x100;o->actor.flags|=6;}
     if((o->flags&0x3e00)==0x3e00){o->flags=(o->flags&~0x3e00u)|0x4000;o->active=1;o->actor.flags=(o->actor.flags&~6u)|3;}
+    if(o->object==83 && (o->actor.flags&6)!=6){o->active=1;o->actor.flags=(o->actor.flags&~6u)|2;}
     w->level->items[i].state=o->actor.current;w->level->items[i].state_known=1;
     return 1;
 }
@@ -292,6 +293,7 @@ int tomb_objects_tick(TombObjects *w,TombAnimContext *c) {
        is immaterial to these independent doors; switch timing still runs before Lara. */
     for(size_t i=0;i<w->count;i++) {
         TombObject *o=w->items+i;if(!o->active)continue;
+        if(o->object==83){if(!tomb_object_animate(o,c))return 0;continue;}
         if(o->object==47 || o->object==52 || (o->object>=74 && o->object<=76)){if(!tomb_peru_tick(w,i,c))return 0;continue;}
         if((o->object>=48 && o->object<=51)){if(!tomb_block_tick(w,i,c))return 0;continue;}
         if(o->object==41 || o->object==162 || o->object==182 || o->object==146 || o->object==147){

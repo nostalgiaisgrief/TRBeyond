@@ -8,6 +8,7 @@
 #include "hazards.h"
 #include "progression.h"
 #include "peru.h"
+#include "object_contact.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -91,7 +92,7 @@ static unsigned char *read_file(const char *path,Header *h){
  int ok=fread(data,1,h->bytes,f)==h->bytes && fgetc(f)==EOF && hash(data,h->bytes)==h->checksum;fclose(f);if(!ok){free(data);return NULL;}return data;
 }
 int tomb_save_level(const char *path){Header h;unsigned char *data=read_file(path,&h);if(!data)return -1;free(data);return (int)h.level;}
-int tomb_save_write(const char *path,int number,const TombPlaytest *p,const TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline){
+static int write_state(const char *path,int number,const TombPlaytest *p,const TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline){
  if(number<0 || number>15 || !p || p->lara.health<=0 || !w || w->progress->complete)return 0;
  unsigned char *data=malloc(SAVE_LIMIT);if(!data)return 0;
  Stream s={data,0,SAVE_LIMIT,0,1,15};state(&s,(TombPlaytest *)p,(TombObjects *)w,(TombFollowCamera *)c,(TombInventory *)baseline);
@@ -99,6 +100,36 @@ int tomb_save_write(const char *path,int number,const TombPlaytest *p,const Tomb
  char temp[MAX_PATH];if(snprintf(temp,sizeof temp,"%s.tmp",path)>=(int)sizeof temp){free(data);return 0;}
  FILE *f=s.ok?fopen(temp,"wb"):NULL;int ok=f && fwrite(&h,sizeof h,1,f)==1 && fwrite(data,1,s.at,f)==s.at;
  if(f && fclose(f))ok=0;free(data);if(ok)ok=MoveFileExA(temp,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;if(!ok)DeleteFileA(temp);return ok;
+}
+/* PS1 collision 0x80043b7c: Action is supplied by the input adapter. The
+   crystal's logical yaw follows Lara for this asymmetric interaction box. */
+int tomb_save_crystal_find(const TombPlaytest *p,const TombObjects *w){
+ if(!p || !w || !(p->gameplay_options&TOMB_SAVE_CRYSTALS) || p->lara.health<=0 ||
+    p->animation.weapon_status || (p->shooter.mode!=TOMB_MODE_FPS && p->pistols.status) ||
+    (p->shooter.mode==TOMB_MODE_FPS && (p->shooter.input&TOMB_INPUT_SHOOT)) || p->lara.water_status ||
+    (p->lara.actor.flags&8) || p->lara.actor.current!=2 ||
+    (p->shooter.mode==TOMB_MODE_VR && p->lara.actor.speed) ||
+    p->lara.pitch < -1820 || p->lara.pitch>1820 || p->lara.lean)return -1;
+ const TombActor *a=&p->lara.actor;
+ for(size_t i=0;i<w->count;i++){
+  const TombObject *o=w->items+i;if(o->object!=83 || (o->actor.flags&6)==6 || o->actor.room!=a->room)continue;
+  int32_t delta[3]={a->x-o->actor.x,a->y-o->actor.y,a->z-o->actor.z},local[3];
+  if(delta[0]<-512 || delta[0]>512 || delta[1]<-100 || delta[1]>100 || delta[2]<-512 || delta[2]>512)continue;
+  tomb_rotate_vector(a->yaw,0,0,delta,1,p->animation.sine_quarter,local);
+  if(local[0]>=-256 && local[0]<=256 && local[2]>=-256 && local[2]<=100)return (int)i;
+ }
+ return -1;
+}
+int tomb_save_write(const char *path,int number,const TombPlaytest *p,const TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline){
+ return p && !(p->gameplay_options&TOMB_SAVE_CRYSTALS) && write_state(path,number,p,w,c,baseline);
+}
+int tomb_save_crystal_write(const char *path,int number,const TombPlaytest *p,TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline,int item){
+ if(item<0 || tomb_save_crystal_find(p,w)!=item)return 0;
+ TombObject *o=w->items+item;TombObject before=*o;
+ /* Include consumption in the snapshot, but roll back if atomic replacement fails. */
+ o->actor.flags=(o->actor.flags&~6u)|6;o->active=0;
+ int ok=write_state(path,number,p,w,c,baseline);if(!ok)*o=before;
+ return ok;
 }
 int tomb_save_read(const char *path,int number,TombPlaytest *p,TombObjects *w,TombFollowCamera *c,TombInventory *baseline){
  Header h;unsigned char *data=read_file(path,&h);if(!data)return 0;

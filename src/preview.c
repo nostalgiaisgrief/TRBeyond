@@ -151,6 +151,7 @@ static const char *binding_names[13]={"Run","Back","Left","Right","Step Left","S
 static int binding_wait;
 static void mouse_release(void);
 static void inventory_begin(void);
+static int crystal_pending=-1,crystal_held,crystal_render;
 static int passport_shortcut,passport_save;
 static void refresh_slots(void);
 static int backdrop_dirty,backdrop_shade;
@@ -194,6 +195,7 @@ static void autosave_reset(int new_level){
    Midas conversion have updated their world state. Selecting a key is not use. */
 static int autosave_poll(void){
  if(title_mode || cinema_mode || media_busy)return 0;
+ if(play.gameplay_options&TOMB_SAVE_CRYSTALS){autosave_level_pending=autosave_switch_pending=0;return 0;}
  int changed=memcmp(autosave_inventory.quest,play.inventory.quest,sizeof play.inventory.quest)!=0 ||
   autosave_inventory.counts[8]!=play.inventory.counts[8] || autosave_inventory.scion!=play.inventory.scion;
  /* Manual land-switch use leaves idle status and changes its goal. Timed
@@ -501,7 +503,7 @@ static void audio_route(const wchar_t *endpoint){
 #include "preview_xr.h"
 static int autosave_switch_held(size_t index){return play.shooter.mode==TOMB_MODE_VR && (vr.hands[0].lever==(int)index || vr.hands[1].lever==(int)index);}
 static int vr_hand_ring(void){return inventory_open && vr.menu_open && !title_mode && !death_menu && !objects.progress->complete;}
-static int inventory_pauses(void){return inventory_open && !vr_hand_ring();}
+static int inventory_pauses(void){return inventory_open && (crystal_pending>=0 || !vr_hand_ring());}
 #include "preview_lighting.h"
 #include "preview_interpolation.h"
 static void mesh(const TombMeshView *m) {
@@ -550,7 +552,7 @@ static void mesh(const TombMeshView *m) {
             /* PS1 water is additive. Draw it after opaque rooms and actors;
                otherwise later rooms overwrite its colour (no depth write). */
             if(visual->rgba_tiles && m->vertex_stride==8 && additive!=room_additive_pass)continue;
-            light_Uniform1i(shade_material,texture?(visual->rgba_tiles?-4:-1):(int)(material&255));
+            light_Uniform1i(shade_material,crystal_render?-6:texture?(visual->rgba_tiles?-4:-1):(int)(material&255));
             if(additive){glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE);glDepthMask(GL_FALSE);}
             glBegin(n==4?GL_QUADS:GL_TRIANGLES);
             for(int j=0;j<n;j++) {
@@ -858,7 +860,7 @@ static int draw_object(const TombObject *o) {
     /* Open panels can lie exactly on room walls. Resolve equal-depth surfaces
        in favour of the panel without moving its geometry or collision. */
     if(door){glEnable(GL_POLYGON_OFFSET_FILL);glPolygonOffset(-1,-1);}
-    rotate_pose(&a,&b,0,t);mesh(visual->meshes+m.mesh_start);
+    rotate_pose(&a,&b,0,t);crystal_render=o->object==83;mesh(visual->meshes+m.mesh_start);crystal_render=0;
     GLfloat stack[64][16];int depth=0,parents[64],parent=0;
     for(unsigned i=1;i<m.mesh_count;i++) {
         const unsigned char *bone=visual->trees+4*m.tree_word+(i-1)*16;int flags=s32(bone);
@@ -999,6 +1001,7 @@ static int make_tiles(void) {
     return 1;
 }
 static int load_game_level(int next_number,int carry,const char *saved) {
+    crystal_pending=-1;crystal_held=0;
     xr.reset=1;
     free(cinematic_pixels);cinematic_pixels=NULL;
     if(next_number<0 || next_number>=LEVEL_CHOICE_COUNT)return 0;
@@ -1081,6 +1084,7 @@ static void inventory_sound(void) {
     tomb_sound_output_event(ring_sound_output,&event,0,origin);
 }
 static void inventory_begin(void) {
+    crystal_pending=-1;
     vr.menu_open=play.shooter.mode==TOMB_MODE_VR && !title_mode && !death_menu;
     mouse_release();
     backdrop_dirty=1;backdrop_shade=32;refresh_slots();
@@ -1089,6 +1093,22 @@ static void inventory_begin(void) {
     if(death_menu){options_ring=1;inventory_keys=inventory_key_only=0;tomb_ring_init_options(&inventory_ring,2);}
     else if(!(inventory_keys?tomb_ring_init_keys(&inventory_ring,&play.inventory):tomb_ring_init(&inventory_ring,&play.inventory)))return;
     ring_previous=inventory_ring;compass_previous=compass_angle;inventory_sound();inventory_open=1;inventory_stats=inventory_selected=0;inventory_input=0;inventory_accumulator=0;if(!vr_hand_ring())accumulator=0;
+}
+static int crystal_poll(void){
+    int action=(play.shooter.mode==TOMB_MODE_FPS?play.shooter.input:play.last_input)&64;
+    if(play.shooter.mode==TOMB_MODE_VR){
+        action=0;
+        if(!vr.hands[0].weapon && !vr.hands[1].weapon)
+            for(int h=0;h<2;h++)if(vr.input.hand[h].valid && vr.input.grip[h]>.6 &&
+                vr.hands[h].pickup<0 && !vr.hands[h].anchored && !vr.hands[h].support)action=1;
+    }
+    if(!action)crystal_held=0;
+    if(!action || crystal_held || inventory_open || title_mode || cinema_mode)return 0;
+    int item=tomb_save_crystal_find(&play,&objects);if(item<0)return 0;
+    crystal_held=1;
+    inventory_begin();crystal_pending=item;inventory_keys=inventory_key_only=0;options_ring=1;
+    tomb_ring_init_options(&inventory_ring,2);ring_previous=inventory_ring;
+    passport_shortcut=2;passport_save=1;accumulator=0;return 1;
 }
 static void font_glyph(void *user,const TombTextGlyph *g) {
     (void)user;int sprite=tomb_hazard_sprite(visual,190,g->glyph,NULL);if(sprite<0)return;
@@ -1343,7 +1363,7 @@ static int draw(void) {
     if(!cinema_mode)draw_shadows();
     if(caves)for(size_t i=0;i<objects.count;i++) {
         const TombObject *o=objects.items+i;
-        if(o->object<0 || (!cinema_mode && !tomb_object_supported(o->object)) || (o->actor.flags&6)==6 || (tomb_pickup_object(o->object) && (o->actor.flags&4)))continue;
+        if((o->object==83 && !(play.gameplay_options&TOMB_SAVE_CRYSTALS)) || o->object<0 || (!cinema_mode && !tomb_object_supported(o->object)) || (o->actor.flags&6)==6 || (tomb_pickup_object(o->object) && (o->actor.flags&4)))continue;
         if(render_object_visible(i)) {
             if(tomb_pickup_object(o->object)){if((play.gameplay_options&TOMB_3D_PICKUPS) && draw_pickup_model(o,i<level->item_count?level->items[i].yaw:0))continue;TombHazardEffect e={0};e.id=o->object;e.x=o->actor.x;e.y=o->actor.y;e.z=o->actor.z;e.room=o->actor.room;draw_hazard_effect(&e,SIZE_MAX,i<level->item_count?level->items[i].intensity:4096);}
             else if(!draw_object(o)){fprintf(stderr,"object draw failed: %d animation %d frame %d\n",o->object,o->actor.animation,o->actor.frame);return 0;}
@@ -1574,6 +1594,7 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     if(msg==WM_KEYDOWN) {
         if(binding_wait && !(lp&(1L<<30))){if(wp!=VK_ESCAPE && wp>0 && wp<256){control_bindings()[option_row]=(unsigned)wp;settings_write();}binding_wait=0;return 0;}
         if(wp==VK_F5 || wp==VK_F6){
+            if(wp==VK_F5 && (play.gameplay_options&TOMB_SAVE_CRYSTALS))return 0;
             if(!(lp&(1L<<30)) && !title_mode && !cinema_mode && !paused && !inventory_open &&
                play.lara.health>0 && !objects.progress->complete){
                 inventory_begin();inventory_keys=inventory_key_only=0;options_ring=1;
@@ -2158,7 +2179,7 @@ int main(int argc,char **argv) {
         if(!shot && !pose_mode && !paused && !inventory_pauses() && !objects.progress->complete && focused) {
             uint32_t input=game_input();
             accumulator+=dt;
-            while(accumulator>=1.0/30.0) { if(play.lara.health<=0 && tomb_death_menu_due(play.dead_ticks,input)){death_menu=1;inventory_begin();break;} if(play.shooter.mode==TOMB_MODE_VR?tomb_vr_tick(&vr,&play):jaw_diagnostic_tick(&play,input|(draw_requested?32:0))){water_particles_tick();if(sound_output)sound_tick();}draw_requested=0;if(frontend_home_complete())break;if(objects.progress->complete)backdrop_dirty=1; update_camera(1.0/30); if(!render_capture()){ok=0;running=0;break;} autosave_poll(); accumulator-=1.0/30.0; if(play.quest_request){death_menu=play.lara.health<=0;inventory_begin();break;} }
+            while(accumulator>=1.0/30.0) { if(play.lara.health<=0 && tomb_death_menu_due(play.dead_ticks,input)){death_menu=1;inventory_begin();break;} if(play.shooter.mode==TOMB_MODE_VR?tomb_vr_tick(&vr,&play):jaw_diagnostic_tick(&play,input|(draw_requested?32:0))){water_particles_tick();if(sound_output)sound_tick();}draw_requested=0;if(frontend_home_complete())break;if(objects.progress->complete)backdrop_dirty=1; update_camera(1.0/30); if(!render_capture()){ok=0;running=0;break;} autosave_poll(); accumulator-=1.0/30.0; if(crystal_poll())break; if(play.quest_request){death_menu=play.lara.health<=0;inventory_begin();break;} }
         } else accumulator=0;
         if(!shot && inventory_open && focused) {
             inventory_accumulator+=dt;
