@@ -232,7 +232,21 @@ static int fps_collision(TombPlaytest *p,TombActor *a,TombContact *c){
            while retaining the original reach, clearance and hand-level tests. */
         TombContact reach=*c;reach.flags&=(uint8_t)~1u;
         if(facing)query(p,a,&reach,762);
-        if(facing && !p->blocked && forward_grab(p,&grab,&reach)){
+        int caught=facing && !p->blocked && forward_grab(p,&grab,&reach);
+        if(facing && !caught && !p->blocked && a->fall_speed>0){
+            /* A thin object floor stops contributing once the query passes
+               underneath it. Sample the beginning of the falling step, then
+               express its heights relative to the current feet. The normal
+               catch test still requires that the hands crossed that edge. */
+            TombActor probe=*a;int drop=a->fall_speed;probe.y-=drop;
+            reach=*c;reach.flags&=(uint8_t)~1u;
+            query(p,&probe,&reach,762);
+            reach.floor-=drop;
+            p->ledge.ceiling-=drop;p->ledge.front_floor-=drop;
+            p->ledge.front_ceiling-=drop;p->ledge.left_floor-=drop;p->ledge.right_floor-=drop;
+            caught=!p->blocked && forward_grab(p,&grab,&reach);
+        }
+        if(caught){
             *a=grab;a->y-=128;a->animation=96;a->frame=1514;a->current=a->goal=10;
             sound_request(p,5,54,2,a);return 1;
         }
