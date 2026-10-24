@@ -10,6 +10,8 @@ unsigned tomb_sound_output_device(void);
 typedef struct TombSoundOutput TombSoundOutput;
 typedef struct TombSoundOutputStats { unsigned blocks,starvations,played_samples; } TombSoundOutputStats;
 TombSoundOutput *tomb_sound_output_open(TombSoundMixer *);
+TombSoundOutput *tomb_sound_output_open_gain(TombSoundMixer *,int gain);
+void tomb_sound_output_gain(TombSoundOutput *,int gain);
 int tomb_sound_output_update(TombSoundOutput *,int paused);
 /* All mixer access while the output is open must pass through this lock. */
 void tomb_sound_output_event(TombSoundOutput *,const TombSoundEvent *,int camera_wet,const double listener[3]);

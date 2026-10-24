@@ -15,7 +15,7 @@
 typedef struct Header { char magic[8]; uint32_t version,layout,level,level_hash,bytes,checksum; } Header;
 typedef struct Stream { unsigned char *data; size_t at,size; int mode,ok,version; } Stream;
 static uint32_t hash(const void *data,size_t n){const unsigned char *p=data;uint32_t h=2166136261u;while(n--)h=(h^*p++)*16777619u;return h;}
-static uint32_t layout_variant(int version,int runtime_vr){size_t sizes[]={(version<5?((offsetof(TombPlaytest,sidearm_type)+7)&~(size_t)7):version<6?((offsetof(TombPlaytest,gameplay_options)+7)&~(size_t)7):version<8?((offsetof(TombPlaytest,spasm_ticks)+7)&~(size_t)7):version<9?((offsetof(TombPlaytest,shooter)+7)&~(size_t)7):version<10?((offsetof(TombPlaytest,shooter)+offsetof(TombShooter,dual)+7)&~(size_t)7):version<11?((offsetof(TombPlaytest,swim_override)+7)&~(size_t)7):version<12?((offsetof(TombPlaytest,tps_slope_jump)+7)&~(size_t)7):version<13?((offsetof(TombPlaytest,fps_shot_held)+7)&~(size_t)7):version<14?((offsetof(TombPlaytest,fps)+7)&~(size_t)7):sizeof(TombPlaytest))-(version==1?2*sizeof(int):0),sizeof(TombLaraStart),sizeof(TombMovement),sizeof(TombObject),sizeof(TombDoor),(version<7?offsetof(TombCreature,neck):sizeof(TombCreature)),sizeof(TombNavigation),sizeof(TombHazards),sizeof(TombProgress),sizeof(TombFollowCamera),sizeof(TombInventory)};
+static uint32_t layout_variant(int version,int runtime_vr){size_t sizes[]={(version<5?((offsetof(TombPlaytest,sidearm_type)+7)&~(size_t)7):version<6?((offsetof(TombPlaytest,gameplay_options)+7)&~(size_t)7):version<8?((offsetof(TombPlaytest,spasm_ticks)+7)&~(size_t)7):version<9?((offsetof(TombPlaytest,shooter)+7)&~(size_t)7):version<10?((offsetof(TombPlaytest,shooter)+offsetof(TombShooter,dual)+7)&~(size_t)7):version<11?((offsetof(TombPlaytest,swim_override)+7)&~(size_t)7):version<12?((offsetof(TombPlaytest,tps_slope_jump)+7)&~(size_t)7):version<13?((offsetof(TombPlaytest,fps_shot_held)+7)&~(size_t)7):version<14?((offsetof(TombPlaytest,fps)+7)&~(size_t)7):sizeof(TombPlaytest))-(version==1?2*sizeof(int):0)-(version<15?8:0),sizeof(TombLaraStart),sizeof(TombMovement),sizeof(TombObject),sizeof(TombDoor),(version<7?offsetof(TombCreature,neck):sizeof(TombCreature)),sizeof(TombNavigation),sizeof(TombHazards),(sizeof(TombProgress)-(version<15?8:0)),sizeof(TombFollowCamera),sizeof(TombInventory)};
  /* These two VR measurements are runtime-only and never enter state().
     Preserve the pre-VR signature; also recognise signatures emitted by 87. */
  if(version>=11 && !runtime_vr)sizes[0]-=sizeof(((TombPlaytest *)0)->vr_body_bottom)+sizeof(((TombPlaytest *)0)->vr_body_height);
@@ -23,12 +23,19 @@ static uint32_t layout_variant(int version,int runtime_vr){size_t sizes[]={(vers
 }
 static uint32_t layout(int version){return layout_variant(version,0);}
 static void chunk(Stream *s,void *p,size_t n){if(!s->ok || n>s->size-s->at){s->ok=0;return;}if(s->mode==0)memcpy(s->data+s->at,p,n);else if(s->mode==2)memcpy(p,s->data+s->at,n);s->at+=n;}
+/* v1..14 stored the 168-byte gym record before separate PS1 trigger history. */
+_Static_assert(offsetof(TombGym,last_music_trigger)==168,"Legacy gym layout");
+_Static_assert(sizeof(TombGym)==176,"Current gym layout");
+static void gym_state(Stream *s,TombGym *g){
+ chunk(s,g,s->version<15?168:sizeof *g);
+ if(s->mode==2 && s->version<15)g->last_music_trigger=g->current_track;
+}
 #define FIELD(v,f) chunk(s,&(v)->f,sizeof (v)->f)
 static void state(Stream *s,TombPlaytest *p,TombObjects *w,TombFollowCamera *c,TombInventory *baseline){
  FIELD(p,ledge);FIELD(p,static_hit);FIELD(p,lara);FIELD(p,movement);FIELD(p,terrain);
  FIELD(p,animation.move_angle);FIELD(p,animation.fall_override);FIELD(p,animation.weapon_status);
  FIELD(p,collision.walk.move_angle);FIELD(p,collision.front_floor);FIELD(p,collision.front_type);FIELD(p,collision.lean);
- FIELD(p,air.move_angle);chunk(s,&p->water,offsetof(TombWater,query));FIELD(p,gym);
+ FIELD(p,air.move_angle);chunk(s,&p->water,offsetof(TombWater,query));gym_state(s,&p->gym);
  FIELD(p,slide.move_angle);FIELD(p,slide.last_angle);FIELD(p,slide.tilt_x);FIELD(p,slide.tilt_z);
  FIELD(p,movement_only);FIELD(p,requested_camera_mode);FIELD(p,requested_camera_elevation);FIELD(p,dead_ticks);
  FIELD(p,door_hit_ticks);FIELD(p,door_hit_direction);FIELD(p,blocked);
@@ -54,7 +61,7 @@ static void state(Stream *s,TombPlaytest *p,TombObjects *w,TombFollowCamera *c,T
  size_t count=s->version>=7?w->count:w->source_count;
  FIELD(w,deferred_actions);FIELD(w,camera);FIELD(w,camera_once);FIELD(w,last_target);
  chunk(s,w->items,count*sizeof *w->items);chunk(s,w->doors,count*sizeof *w->doors);
- chunk(s,w->hazards,sizeof *w->hazards);chunk(s,w->progress,sizeof *w->progress);
+ chunk(s,w->hazards,sizeof *w->hazards);gym_state(s,&w->progress->music);chunk(s,&w->progress->secrets,sizeof *w->progress-sizeof w->progress->music);
  TombEnemies *e=w->enemies;FIELD(e,slots);FIELD(e,head);FIELD(e,random);FIELD(e,camera);
  if(s->version>=7)chunk(s,e->items,count*sizeof *e->items);else for(size_t j=0;j<count;j++)chunk(s,e->items+j,offsetof(TombCreature,neck));chunk(s,e->next,count*sizeof *e->next);
  chunk(s,e->room_head,w->level->room_count*sizeof *e->room_head);chunk(s,e->room_next,count*sizeof *e->room_next);chunk(s,e->room_id,count*sizeof *e->room_id);
@@ -79,7 +86,7 @@ static void state(Stream *s,TombPlaytest *p,TombObjects *w,TombFollowCamera *c,T
 #undef FIELD
 static unsigned char *read_file(const char *path,Header *h){
  FILE *f=fopen(path,"rb");if(!f)return NULL;
- if(fread(h,sizeof *h,1,f)!=1 || memcmp(h->magic,"TOMBSV1",8) || (h->version!=1 && h->version!=2 && h->version!=3 && h->version!=4 && h->version!=5 && h->version!=6 && h->version!=7 && h->version!=8 && h->version!=9 && h->version!=10 && h->version!=11 && h->version!=12 && h->version!=13 && h->version!=14) || (h->layout!=layout((int)h->version) && h->layout!=layout_variant((int)h->version,1)) || h->level>15 || !h->bytes || h->bytes>SAVE_LIMIT){fclose(f);return NULL;}
+ if(fread(h,sizeof *h,1,f)!=1 || memcmp(h->magic,"TOMBSV1",8) || (h->version!=1 && h->version!=2 && h->version!=3 && h->version!=4 && h->version!=5 && h->version!=6 && h->version!=7 && h->version!=8 && h->version!=9 && h->version!=10 && h->version!=11 && h->version!=12 && h->version!=13 && h->version!=14 && h->version!=15) || (h->layout!=layout((int)h->version) && h->layout!=layout_variant((int)h->version,1)) || h->level>15 || !h->bytes || h->bytes>SAVE_LIMIT){fclose(f);return NULL;}
  unsigned char *data=malloc(h->bytes);if(!data){fclose(f);return NULL;}
  int ok=fread(data,1,h->bytes,f)==h->bytes && fgetc(f)==EOF && hash(data,h->bytes)==h->checksum;fclose(f);if(!ok){free(data);return NULL;}return data;
 }
@@ -87,8 +94,8 @@ int tomb_save_level(const char *path){Header h;unsigned char *data=read_file(pat
 int tomb_save_write(const char *path,int number,const TombPlaytest *p,const TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline){
  if(number<0 || number>15 || !p || p->lara.health<=0 || !w || w->progress->complete)return 0;
  unsigned char *data=malloc(SAVE_LIMIT);if(!data)return 0;
- Stream s={data,0,SAVE_LIMIT,0,1,14};state(&s,(TombPlaytest *)p,(TombObjects *)w,(TombFollowCamera *)c,(TombInventory *)baseline);
- Header h={{'T','O','M','B','S','V','1',0},14,layout(14),(uint32_t)number,hash(w->level->file_data,w->level->file_size),(uint32_t)s.at,hash(data,s.at)};
+ Stream s={data,0,SAVE_LIMIT,0,1,15};state(&s,(TombPlaytest *)p,(TombObjects *)w,(TombFollowCamera *)c,(TombInventory *)baseline);
+ Header h={{'T','O','M','B','S','V','1',0},15,layout(15),(uint32_t)number,hash(w->level->file_data,w->level->file_size),(uint32_t)s.at,hash(data,s.at)};
  char temp[MAX_PATH];if(snprintf(temp,sizeof temp,"%s.tmp",path)>=(int)sizeof temp){free(data);return 0;}
  FILE *f=s.ok?fopen(temp,"wb"):NULL;int ok=f && fwrite(&h,sizeof h,1,f)==1 && fwrite(data,1,s.at,f)==s.at;
  if(f && fclose(f))ok=0;free(data);if(ok)ok=MoveFileExA(temp,path,MOVEFILE_REPLACE_EXISTING|MOVEFILE_WRITE_THROUGH)!=0;if(!ok)DeleteFileA(temp);return ok;

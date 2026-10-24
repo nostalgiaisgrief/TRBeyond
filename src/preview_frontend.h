@@ -63,7 +63,7 @@ static int frontend_home_complete(void){
 /* Load the replacement title before discarding the previous source's menu.
    The next New Game/Load constructs a fresh world from the selected source. */
 static int frontend_source_apply(void){
- if(source_pending==source_selected)return 1;
+ if(source_pending==source_selected){if(music_selected!=music_pending)audio_stop();music_selected=music_pending;fmv_selected=fmv_pending;return 1;}
  int previous=source_selected;
  TombLevel *old_level=title_level;TombVisual *old_visual=title_visual;
  GLuint *old_tiles=title_tiles,*old_font=title_font_tiles,old_backdrop=title_backdrop;
@@ -71,11 +71,11 @@ static int frontend_source_apply(void){
  source_selected=source_pending;
  if(!frontend_assets()){
   frontend_free();title_level=old_level;title_visual=old_visual;title_tiles=old_tiles;title_font_tiles=old_font;title_backdrop=old_backdrop;
-  source_selected=source_pending=previous;strcpy(menu_error,"Could not load source");return 0;
+  source_selected=source_pending=previous;music_pending=music_selected;fmv_pending=fmv_selected;strcpy(menu_error,"Could not load source");return 0;
  }
  if(old_visual){glDeleteTextures((GLsizei)(old_visual->tile_count*2+1),old_tiles);glDeleteTextures((GLsizei)old_visual->tile_count,old_font);}
  free(old_tiles);free(old_font);tomb_visual_free(old_visual);tomb_level_free(old_level);glDeleteTextures(1,&old_backdrop);
- audio_stop();slot_memory_ready=0;refresh_slots();return 1;
+ audio_stop();music_selected=music_pending;fmv_selected=fmv_pending;slot_memory_ready=0;refresh_slots();return 1;
 }
 static void frontend_execute(int id){
  char path[MAX_PATH];int action=menu_action;menu_action=0;
@@ -204,7 +204,7 @@ static int frontend_input(unsigned *input){
   if(*input&TOMB_RING_SELECT){tomb_ring_finish_item(r,73);*input=0;}
  }
  else if(i->object>=95 && i->object<=97){
-  int rows=i->object==95?(title_mode?5:4):i->object==96?2:13;
+  int rows=i->object==95?(title_mode?7:4):i->object==96?2:13;
   if(i->object==95){if(*input&16 && option_row>0)option_row--;if(*input&32 && option_row<rows-1)option_row++;}
   else if(i->object==97){
    if(option_row<0){if(*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))controls_page=(controls_page+((*input&TOMB_RING_RIGHT)?1:3))%4;if(*input&32)option_row=0;}
@@ -223,7 +223,9 @@ static int frontend_input(unsigned *input){
    else if(option_row==1)settings_framerate=(settings_framerate+(forward?1:2))%3;
    else if(option_row==2)settings_vsync=!settings_vsync;
    else if(option_row==3)settings_force43=!settings_force43;
-   else if(title_mode)source_pending=source_cycle(source_pending,forward?1:-1);
+   else if(title_mode && option_row==4)source_pending=source_cycle(source_pending,forward?1:-1);
+   else if(title_mode && option_row==5)music_pending=source_cycle_mask(music_pending,forward?1:-1,music_available);
+   else if(title_mode && option_row==6)fmv_pending=source_cycle_mask(fmv_pending,forward?1:-1,fmv_available);
   }
   if(i->object==96){int *v=option_row?&settings_sound:&settings_music;if(*input&TOMB_RING_LEFT && *v>0)--*v;if(*input&TOMB_RING_RIGHT && *v<10)++*v;}
   if(i->object==97 && (*input&TOMB_RING_SELECT)){if(option_row<0 || controls_page==3){*input=0;return 0;}binding_wait=1;*input=0;return 0;}
@@ -389,12 +391,15 @@ static void frontend_overlay(void){
    if(first+10<frontend_slot_count(page))ui_text(0,-88,"]",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
   }
  }else if(i->object==95 || i->object==96){
-  int detail=i->object==95,rows=detail?(title_mode?5:4):2;
+  int detail=i->object==95,rows=detail?(title_mode?7:4):2;
   tomb_dialog_layout(i->object,option_row,0,entries);
-  if(detail){entries[0].panel_height=title_mode?162:132;entries[5]=entries[4];entries[5].y=75;entries[5].panel_width=option_row==3?288:0;entries[0].panel_width=300;entries[1].panel_width=296;for(int row=0;row<3;row++)if(entries[row+2].panel_width)entries[row+2].panel_width=288;}
-  if(detail && title_mode){entries[6]=entries[5];entries[6].y=105;entries[6].panel_width=option_row==4?288:0;}
+  if(detail){entries[0].panel_height=title_mode?252:132;entries[5]=entries[4];entries[5].y=75;entries[5].panel_width=option_row==3?288:0;entries[0].panel_width=300;entries[1].panel_width=296;for(int row=0;row<3;row++)if(entries[row+2].panel_width)entries[row+2].panel_width=288;}
+  if(detail && title_mode){
+   entries[0].panel_width=460;entries[1].panel_width=456;entries[0].y=-112;entries[1].y=-110;
+   for(int row=0;row<7;row++){entries[row+2]=entries[2];entries[row+2].y=-80+30*row;entries[row+2].panel_width=option_row==row?448:0;}
+  }
   frontend_entry(entries," ",0);frontend_entry(entries+1,detail?"Detail Levels":"Set Volumes",0);
-  for(int row=0;row<rows;row++){char line[40];if(detail && row==4)snprintf(line,sizeof line,"Source: %s",source_names[source_pending]);else if(detail)snprintf(line,sizeof line,"%s: %s",row==0?"Detail":row==1?"Framerate Limit":row==2?"VSync":"Force 4:3",row==0?(settings_detail==2?"High":settings_detail==1?"Medium":"Low"):row==1?(settings_framerate==0?"None":settings_framerate==1?"60":"30"):((row==2?settings_vsync:settings_force43)?"On":"Off"));else snprintf(line,sizeof line,"%c %2d",row==0?'|':'}',row==0?settings_music:settings_sound);frontend_entry(entries+row+2,line,0);}
+  for(int row=0;row<rows;row++){char line[80];if(detail && row>=4)snprintf(line,sizeof line,"%s: %s",row==4?"Level Source":row==5?"Music and Speech Source":"FMV Source",(row==4?source_available:row==5?music_available:fmv_available)?source_names[row==4?source_pending:row==5?music_pending:fmv_pending]:"Unavailable");else if(detail)snprintf(line,sizeof line,"%s: %s",row==0?"Detail":row==1?"Framerate Limit":row==2?"VSync":"Force 4:3",row==0?(settings_detail==2?"High":settings_detail==1?"Medium":"Low"):row==1?(settings_framerate==0?"None":settings_framerate==1?"60":"30"):((row==2?settings_vsync:settings_force43)?"On":"Off"));else snprintf(line,sizeof line,"%c %2d",row==0?'|':'}',row==0?settings_music:settings_sound);frontend_entry(entries+row+2,line,0);}
  }else if(i->object==97){
   /* Preserve user bindings; DOS puts Look before Roll in its right column. */
   tomb_dialog_layout(97,option_row,0,entries);

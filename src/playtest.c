@@ -35,7 +35,14 @@ static void event(void *user,int kind,int16_t id,TombActor *actor) {
         if(p->shooter.mode==TOMB_MODE_FPS && actor==&p->lara.actor &&
            (id==0 || ((id==34 || id==35 || id==36 || id==37 || id==52) && p->lara.water_status)))return;
         ++p->sound_events;sound_request(p,5,id,actor==&p->lara.actor?2:0,actor);}
-    else if(kind==11){if(p->objects && p->objects->progress->music.current_track!=id){p->objects->progress->music.current_track=id;++p->objects->progress->music.audio_serial;}}
+    else if(kind==11 && p->objects){
+        TombGym *music=&p->objects->progress->music;
+        int ps1_skater=p->level->music_edition==2 && id==56;
+        if((ps1_skater?music->last_music_trigger:music->current_track)!=id){
+            if(ps1_skater)music->last_music_trigger=id;
+            music->current_track=id;++music->audio_serial;
+        }
+    }
     else if(kind==9){++p->sound_events;sound_request(p,9,id,0,actor);}
     else if(kind==10)sound_request(p,10,id,0,actor);
     else if(kind==7) {++p->sound_stops;sound_request(p,7,id,2,actor);}
@@ -871,7 +878,7 @@ int tomb_playtest_tick(TombPlaytest *p,uint32_t input) {
             if(ok && !(p->shooter.mode==TOMB_MODE_FPS && (trigger_type==2 || trigger_type==3)))
                 ok=tomb_objects_trigger_camera(p->objects,h.trigger_index,h.floor==a->y,p->animation.weapon_status,camera_mode);
         }
-        if(p->level->asset.edition!=2 && p->objects->progress->secret_serial!=secret_before)sound_request(p,5,173,2,&p->lara.actor);
+        if(p->level->music_edition!=2 && p->objects->progress->secret_serial!=secret_before)sound_request(p,5,173,2,&p->lara.actor);
         if(!ok){p->blocked=1;p->status="Object service unavailable";}
     }
     if(ok && !p->shooter.mode && p->lara.health>0 && p->objects && !p->objects->camera.active && p->objects->camera.target>=0 && !(p->camera_request.flags&(TOMB_CAMERA_LOOK|TOMB_CAMERA_COMBAT))){

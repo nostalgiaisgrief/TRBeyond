@@ -1,6 +1,9 @@
 #include "gym.h"
 /* Independently reconstructed DOS 0x18ce8/0x18e28. */
 void tomb_gym_audio(TombGym *g,int track,uint16_t flags,int type,int state) {
+    tomb_gym_audio_source(g,track,flags,type,state,0);
+}
+void tomb_gym_audio_source(TombGym *g,int track,uint16_t flags,int type,int state,int ps1) {
     if(track<=1 || track>=64)return;
     if(track==28 && (g->tracks[28]&0x100) && state==28)track=29;
     else if((track==37 || track==41) && state!=10)return;
@@ -19,7 +22,10 @@ void tomb_gym_audio(TombGym *g,int track,uint16_t flags,int type,int state) {
     else if(mask)g->tracks[track]|=mask;
     if((g->tracks[track]&0x3e00)==0x3e00) {
         if(flags&0x100)g->tracks[track]|=0x100;
-        if(g->current_track!=track){g->current_track=track;g->audio_serial++;}
+        if((ps1?g->last_music_trigger:g->current_track)!=track){
+            if(ps1)g->last_music_trigger=track;
+            g->current_track=track;g->audio_serial++;
+        }
     } else {g->current_track=0;g->audio_serial++;}
 }
 void tomb_gym_begin_tick(TombGym *g) {
@@ -41,7 +47,7 @@ int tomb_gym_trigger(TombGym *g,const TombLevel *l,size_t index,int state) {
     at=index+2;
     while(at<l->floor_count) {
         uint16_t word=l->floor_data[at++];unsigned type=(word&0x3fff)>>10,value=word&1023;
-        if(type==8)tomb_gym_audio(g,(int)value,l->floor_data[index+1],0,state);
+        if(type==8)tomb_gym_audio_source(g,(int)value,l->floor_data[index+1],0,state,l->music_edition==2);
         else if(type==7)g->complete=1;
         else {
             word=l->floor_data[at++];int id=(int)value+1;

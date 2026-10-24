@@ -25,7 +25,7 @@ struct TombSoundOutput {
     HWAVEOUT device; TombSoundMixer *mixer;
     WAVEHDR header[BLOCKS]; int16_t pcm[BLOCKS][FRAMES*2];
     CRITICAL_SECTION lock; HANDLE ready,stop,thread;
-    int paused,failed,primed,volume;unsigned prepared;
+    int paused,failed,primed,volume,gain;unsigned prepared;
     TombSoundOutputStats stats;
 };
 static DWORD WINAPI pump(void *user) {
@@ -38,7 +38,7 @@ static DWORD WINAPI pump(void *user) {
             if(o->primed && !queued)o->stats.starvations++;
             for(int i=0;i<BLOCKS;i++)if(!(o->header[i].dwFlags&WHDR_INQUEUE)) {
                 tomb_sound_mix(o->mixer,o->pcm[i],FRAMES);
-                for(int s=0;s<FRAMES*2;s++)o->pcm[i][s]=(int16_t)(o->pcm[i][s]*o->volume/10);
+                for(int s=0;s<FRAMES*2;s++)o->pcm[i][s]=(int16_t)((int64_t)o->pcm[i][s]*o->volume*o->gain/(10*32767));
                 if(waveOutWrite(o->device,o->header+i,sizeof(WAVEHDR))!=MMSYSERR_NOERROR){o->failed=1;break;}
                 o->stats.blocks++;o->primed=1;
             }
@@ -49,7 +49,10 @@ static DWORD WINAPI pump(void *user) {
     return 0;
 }
 TombSoundOutput *tomb_sound_output_open(TombSoundMixer *m) {
-    TombSoundOutput *o=calloc(1,sizeof *o);if(!o)return NULL;o->mixer=m;o->volume=10;
+    return tomb_sound_output_open_gain(m,32767);
+}
+TombSoundOutput *tomb_sound_output_open_gain(TombSoundMixer *m,int gain) {
+    TombSoundOutput *o=calloc(1,sizeof *o);if(!o)return NULL;o->mixer=m;o->volume=10;o->gain=gain<0?0:gain>32767?32767:gain;
     InitializeCriticalSection(&o->lock);
     o->ready=CreateEventW(NULL,FALSE,FALSE,NULL);o->stop=CreateEventW(NULL,TRUE,FALSE,NULL);
     if(!o->ready || !o->stop){tomb_sound_output_close(o);return NULL;}
@@ -111,3 +114,4 @@ void tomb_sound_output_close(TombSoundOutput *o) {
 }
 
 void tomb_sound_output_volume(TombSoundOutput *o,int volume){if(!o)return;EnterCriticalSection(&o->lock);o->volume=volume<0?0:volume>10?10:volume;LeaveCriticalSection(&o->lock);}
+void tomb_sound_output_gain(TombSoundOutput *o,int gain){if(!o)return;EnterCriticalSection(&o->lock);o->gain=gain<0?0:gain>32767?32767:gain;LeaveCriticalSection(&o->lock);}

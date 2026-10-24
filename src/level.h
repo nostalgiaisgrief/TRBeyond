@@ -74,6 +74,7 @@ typedef struct TombLevel {
     uint16_t *overlaps;
     size_t overlap_count;
     int16_t *zones; /* Ground, alternate ground, fly; then the flipped-room triple. */
+    int music_edition; /* Runtime music policy; defaults to the asset edition. */
     int dos_level; /* Canonical campaign index, or -1 for an unknown filename. */
 } TombLevel;
 /* Loads Beyond v1 or original DOS reference data, validating section bounds.

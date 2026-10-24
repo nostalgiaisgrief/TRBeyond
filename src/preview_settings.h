@@ -24,7 +24,9 @@ static void settings_named_write(const char *section,const char *name,const char
 static void settings_write(void){
     if(front_test)return;
     char path[MAX_PATH],value[32],key[32];settings_path(path);
-    WritePrivateProfileStringA("Game","source",source_dirs[source_selected],path);
+    WritePrivateProfileStringA("Game","level_source",source_dirs[source_selected],path);
+    WritePrivateProfileStringA("Game","music_speech_source",source_dirs[music_selected],path);
+    WritePrivateProfileStringA("Game","fmv_source",source_dirs[fmv_selected],path);
     snprintf(value,sizeof value,"%d",settings_force43);WritePrivateProfileStringA("Display","force43",value,path);
     snprintf(value,sizeof value,"%d",settings_framerate);WritePrivateProfileStringA("Display","framerate",value,path);
     snprintf(value,sizeof value,"%d",settings_vsync);WritePrivateProfileStringA("Display","vsync",value,path);

@@ -24,7 +24,7 @@ void tomb_progress_action_source(TombProgress *p,int action,int value,uint16_t f
         }
     } else if(action==8) {
         int old=p->music.current_track;unsigned serial=p->music.audio_serial;
-        tomb_gym_audio(&p->music,value,flags,type,p->lara_state);
+        tomb_gym_audio_source(&p->music,value,flags,type,p->lara_state,ps1);
         if(!ps1 && p->music.audio_serial!=serial && p->music.current_track) {
             int source=tomb_music_source(p->music.current_track);
             if(source==-1 || source==-2){p->music.current_track=old;p->music.audio_serial=serial;if(source==-2)++p->secret_serial;}

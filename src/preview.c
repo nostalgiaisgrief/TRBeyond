@@ -162,7 +162,7 @@ static int load_game_level(int,int,const char *);
 #include "preview_sources.h"
 static void asset_path(char *path,const char *file){
  char relative[100];snprintf(relative,sizeof relative,"DATA/%s",file);
- size_t n=strlen(relative);if(!source_legacy && n>4 && !_stricmp(relative+n-4,".PHD"))memcpy(relative+n-4,".TBL",5);
+ size_t n=strlen(relative);if(!(source_legacy && source_selected==1) && n>4 && !_stricmp(relative+n-4,".PHD"))memcpy(relative+n-4,".TBL",5);
  if(source_selected==0 && n>4 && !_stricmp(relative+n-4,".PCX"))memcpy(relative+n-4,".tbi",5);
  source_path(path,relative);
 }
@@ -224,6 +224,35 @@ static unsigned *control_bindings(void){return controls_page==2?fps_bindings:con
 
 static void vr_sound_listener(double listener[3],int *room);
 static int vr_sound_yaw(void);
+/* DOS speech and secret fanfare belong to Music & Speech, not world SFX. */
+static TombLevel *speech_level;
+static TombSoundBank speech_bank;
+static TombSoundMixer speech_effect_mixer;
+static TombSoundOutput *speech_effect_output;
+static int speech_level_number=-1,speech_source=-1;
+static void speech_free(void){
+ tomb_sound_output_close(speech_effect_output);speech_effect_output=NULL;
+ tomb_sound_bank_free(&speech_bank);tomb_level_free(speech_level);speech_level=NULL;
+ speech_level_number=speech_source=-1;
+}
+static TombSoundBank *speech_samples(void){
+ if(music_selected==source_selected)return &sound_bank;
+ if(speech_level_number!=level_number || speech_source!=music_selected){
+  speech_free();speech_level_number=level_number;speech_source=music_selected;
+  char path[MAX_PATH],relative[80],error[128];
+  snprintf(relative,sizeof relative,"DATA/%s",level_choices[level_number].file);
+  size_t n=strlen(relative);
+  if(!(source_legacy && music_selected==1) && n>4)memcpy(relative+n-4,".TBL",5);
+  source_path_for(path,relative,music_selected);
+  speech_level=tomb_level_load(path,error,sizeof error);
+  if(speech_level && tomb_sound_bank_load(&speech_bank,speech_level)){
+   speech_bank.source_count=0; /* Never duplicate the other edition's ambient effects. */
+   tomb_sound_init(&speech_effect_mixer,&speech_bank);
+   speech_effect_output=tomb_sound_output_open(&speech_effect_mixer);
+  }
+ }
+ return &speech_bank;
+}
 static void sound_tick(void) {
     double listener[3]={play.lara.actor.x,play.lara.actor.y-450,play.lara.actor.z};
     int room=play.lara.actor.room;
@@ -237,7 +266,14 @@ static void sound_tick(void) {
     int yaw=play.lara.actor.yaw+play.lara.head_yaw+play.lara.torso_yaw;
     if(play.shooter.mode==TOMB_MODE_SHOOTER || play.shooter.mode==TOMB_MODE_FPS){memcpy(origin,listener,sizeof origin);yaw=play.shooter.yaw;}
     else if(play.shooter.mode==TOMB_MODE_VR){memcpy(origin,listener,sizeof origin);yaw=vr_sound_yaw();}
-    tomb_sound_output_spatial_frame(sound_output,play.sounds,play.sound_count,objects.peru && objects.peru->flipped,wet,listener,origin,yaw);
+    TombSoundEvent effects[TOMB_SOUND_EVENTS],secrets[TOMB_SOUND_EVENTS];size_t ne=0,ns=0;
+    for(size_t i=0;i<play.sound_count;i++){
+      if(music_selected!=0 && music_selected!=source_selected && play.sounds[i].kind==5 && play.sounds[i].id==173)secrets[ns++]=play.sounds[i];
+      else effects[ne++]=play.sounds[i];
+    }
+    if(ns)speech_samples();
+    tomb_sound_output_spatial_frame(sound_output,effects,ne,objects.peru && objects.peru->flipped,wet,listener,origin,yaw);
+    if(speech_effect_output)tomb_sound_output_spatial_frame(speech_effect_output,secrets,ns,0,wet,listener,origin,yaw);
 }
 
 static TombSoundOutput *music_output;
@@ -245,41 +281,73 @@ static TombSoundMixer music_mixer;
 static TombSoundBank music_bank;
 static TombSoundSample music_sample;
 static unsigned char *music_data;
+#include "music_ps1.h"
 static unsigned playing_music_serial;
-static void audio_stop(void) {
-    tomb_sound_output_close(music_output);music_output=NULL;free(music_data);music_data=NULL;playing_track=0;playing_music_serial=0;audio_paused=0;audio_error[0]=0;
+static TombPS1Music ps1_music;
+static int requested_music_track;
+static void audio_close_stream(void) {
+    tomb_sound_output_close(music_output);music_output=NULL;free(music_data);music_data=NULL;audio_error[0]=0;
 }
-static void audio_update(int suspended) {
-    int track=title_mode?2:caves?objects.progress->music.current_track:play.gym.current_track;
-    unsigned serial=title_mode?0:caves?objects.progress->music.audio_serial:play.gym.audio_serial;
-    if(source_selected==0 && (track<2 || track>57))track=0;
-    if(track!=playing_track || (source_selected==0 && serial!=playing_music_serial)) {
-        audio_stop();playing_track=track;playing_music_serial=serial;
+static void audio_stop(void) {
+    audio_close_stream();speech_free();playing_track=0;playing_music_serial=0;requested_music_track=0;
+    ps1_music=(TombPS1Music){0};audio_paused=0;
+}
+static void audio_start_track(int track,int gain) {
+    audio_close_stream();playing_track=track;
         if(track) {
-            int source=source_selected==0?(track>=2 && track<=57?track:0):tomb_music_source(track),ready=0;
+            int source=music_selected==0?(track>=2 && track<=57?track:0):tomb_music_source(track),ready=0;
             /* DOS 38cf7 requests sound ID track+148 from the current level. */
             if(source==-3){
-                int detail=sound_bank.map[track+148];
-                if(sound_bank.details && detail>=0 && (size_t)detail<sound_bank.detail_count){
-                    unsigned sample=sound_bank.details[detail].sample;
-                    if(sample<sound_bank.sample_count){music_sample=sound_bank.samples[sample];ready=1;}
+                TombSoundBank *bank=speech_samples();
+                int detail=bank->map[track+148];
+                if(bank->details && detail>=0 && (size_t)detail<bank->detail_count){
+                    unsigned sample=bank->details[detail].sample;
+                    if(sample<bank->sample_count){music_sample=bank->samples[sample];ready=1;}
                 }
             }else{
                 char file[MAX_PATH],relative[80];
-                snprintf(relative,sizeof relative,"AUDIO/%s%02d.wav",source>0?"cd":"track",source>0?source:track);source_path(file,relative);
+                snprintf(relative,sizeof relative,"AUDIO/%s%02d.wav",source>0?"cd":"track",source>0?source:track);source_path_for(file,relative,music_selected);
                 FILE *f=fopen(file,"rb");long bytes=0;
                 if(f){if(!fseek(f,0,SEEK_END))bytes=ftell(f);rewind(f);if(bytes>0 && bytes<100000000)music_data=malloc((size_t)bytes);if(music_data && fread(music_data,1,(size_t)bytes,f)!=(size_t)bytes){free(music_data);music_data=NULL;}fclose(f);}
                 ready=music_data && tomb_sound_sample(&music_sample,music_data,(size_t)bytes);
             }
             if(ready){
                 memset(&music_bank,0,sizeof music_bank);music_bank.samples=&music_sample;music_bank.sample_count=1;tomb_sound_init(&music_mixer,&music_bank);
-                music_mixer.voices[0]=(TombSoundVoice){.active=1,.volume=32767,.pitch=100,.mode=source_selected==0?(title_mode?2:0):(source>0?2:0)};music_output=tomb_sound_output_open(&music_mixer);
+                music_mixer.voices[0]=(TombSoundVoice){.active=1,.volume=32767,.pitch=100,.mode=music_selected==0?(title_mode?2:0):(source>0?2:0)};music_output=tomb_sound_output_open_gain(&music_mixer,gain);
             }
             if(!music_output)snprintf(audio_error,sizeof audio_error,"Music track %d unavailable",track);
         }
+}
+static void audio_update(int suspended,double dt) {
+    int track=title_mode?2:caves?objects.progress->music.current_track:play.gym.current_track;
+    unsigned serial=title_mode?0:caves?objects.progress->music.audio_serial:play.gym.audio_serial;
+    if(music_selected==0){
+        if(track<2 || track>57)track=0;
+        /* Use the device playback position, not the mixer position (which is
+           several buffers ahead), to recognize a completed one-shot. */
+        if(!title_mode && ps1_music.active && music_output && music_sample.rate &&
+           (uint64_t)tomb_sound_output_stats(music_output).played_samples*music_sample.rate >=
+           (uint64_t)music_sample.frames*TOMB_SOUND_RATE)tomb_ps1_music_finished(&ps1_music);
+        if(track!=requested_music_track || serial!=playing_music_serial){
+            tomb_ps1_music_request(&ps1_music,track);
+            requested_music_track=track;playing_music_serial=serial;
+        }
+        if(title_mode || !suspended){
+            /* The USA executable installs its CD update in the vertical-blank
+               callback (0x80053b04), independent of the 30 Hz game simulation. */
+            ps1_music.clock+=dt*60.0;
+            while(ps1_music.clock>=1.0){
+                ps1_music.clock-=1.0;
+                if(tomb_ps1_music_tick(&ps1_music))audio_start_track(ps1_music.active,0);
+            }
+        }
+        tomb_sound_output_gain(music_output,ps1_music.gain*32767/129);
+    }else if(track!=playing_track){
+        audio_start_track(track,32767);playing_music_serial=serial;
     }
     tomb_sound_output_volume(music_output,settings_music);
-    if(music_output)tomb_sound_output_update(music_output,title_mode?0:suspended);
+    if(music_output)tomb_sound_output_update(music_output,(title_mode?0:suspended) || (music_selected==0 && ps1_music.stopped));
+    tomb_sound_output_volume(speech_effect_output,settings_sound);tomb_sound_output_update(speech_effect_output,suspended);
     tomb_sound_output_volume(sound_output,settings_sound);tomb_sound_output_volume(ring_sound_output,settings_sound);
 }
 static void update_camera(double dt) {
@@ -419,13 +487,16 @@ static void colour(unsigned index,float shade) {
 static void audio_route(const wchar_t *endpoint){
     /* Keep mixer positions/voices but replace WinMM handles bound to the old
        endpoint. This includes menu effects and the already-playing CD track. */
-    int music=music_output!=NULL,world=sound_output!=NULL,ring=ring_sound_output!=NULL;
+    int music=music_output!=NULL,world=sound_output!=NULL,ring=ring_sound_output!=NULL,speech=speech_effect_output!=NULL;
     tomb_sound_output_close(music_output);tomb_sound_output_close(sound_output);tomb_sound_output_close(ring_sound_output);
+    tomb_sound_output_close(speech_effect_output);
     if(!tomb_sound_output_route(endpoint))fprintf(stderr,"VR audio endpoint unavailable; using Windows default output\n");
     music_output=music?tomb_sound_output_open(&music_mixer):NULL;
     sound_output=world?tomb_sound_output_open(&sound_mixer):NULL;
     ring_sound_output=ring?tomb_sound_output_open(&ring_sound_mixer):NULL;
-    tomb_sound_output_volume(music_output,settings_music);tomb_sound_output_volume(sound_output,settings_sound);tomb_sound_output_volume(ring_sound_output,settings_sound);
+    speech_effect_output=speech?tomb_sound_output_open(&speech_effect_mixer):NULL;
+    tomb_sound_output_volume(music_output,settings_music);tomb_sound_output_volume(speech_effect_output,settings_sound);
+    tomb_sound_output_volume(sound_output,settings_sound);tomb_sound_output_volume(ring_sound_output,settings_sound);
 }
 #include "preview_xr.h"
 static int autosave_switch_held(size_t index){return play.shooter.mode==TOMB_MODE_VR && (vr.hands[0].lever==(int)index || vr.hands[1].lever==(int)index);}
@@ -556,12 +627,15 @@ static void gun_flash(void) {
     glRotatef((float)fmod(elapsed*13871,360),0,0,1);mesh(visual->meshes+flash.mesh_start);model_light=saved;glPopMatrix();render_node=saved_node;render_parent=saved_parent;
 }
 static GLfloat fps_hand_view[16]; /* Render regression capture, populated only in front-end tests. */
-static int draw_lara_actor(const TombObject *clone) {
-    if(!clone && !pose_mode && play.shooter.mode==TOMB_MODE_VR)return 1;
-    int fps=!clone && !pose_mode && !cinema_mode && play.shooter.mode==TOMB_MODE_FPS &&
+static int fps_overlay_active(void) {
+    return !pose_mode && !cinema_mode && play.shooter.mode==TOMB_MODE_FPS &&
         play.lara.health>0 && !(objects.peru && objects.peru->scion_item>=0) &&
         play.lara.actor.current!=50 && play.lara.actor.current!=51 &&
         (render_recording?play.fps.block_view==0:block_view_sample()<=0);
+}
+static int draw_lara_actor(const TombObject *clone) {
+    if(!clone && !pose_mode && play.shooter.mode==TOMB_MODE_VR)return 1;
+    int fps=!clone && fps_overlay_active();
     if(fps && (render_recording || !tomb_fps_ready(&play)))return 1;
     int view_weapon=fps && fps_view.weapon?fps_view.weapon:play.weapon_type;
     int view_sidearm=fps?(view_weapon==4?1:view_weapon):play.sidearm_type;
@@ -930,6 +1004,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     if(next_number<0 || next_number>=LEVEL_CHOICE_COUNT)return 0;
     char path[MAX_PATH],error[256]={0};asset_path(path,level_choices[next_number].file);
     TombLevel *next=tomb_level_load(path,error,sizeof error);TombVisual *view=NULL;
+    if(next)next->music_edition=music_selected==0?2:1;
     TombObjects world={0};TombPlaytest player;TombLaraStart spawn;TombScreenRect *rects=NULL;
     if(!next || !(view=tomb_visual_load(next,error,sizeof error)) || !tomb_lara_start(next,&spawn) ||
        !(rects=calloc(next->room_count,sizeof *rects)) || !tomb_objects_init(&world,next,view) ||
@@ -965,8 +1040,8 @@ static int load_game_level(int next_number,int carry,const char *saved) {
            restored speech as already handled without restarting its sample;
            retain current_track and one-shot masks to avoid retriggering it. */
         int restored_track=next_number?objects.progress->music.current_track:play.gym.current_track;
-        if(source_selected==0 || tomb_music_source(restored_track)==-3)playing_track=restored_track;
-        if(source_selected==0)playing_music_serial=next_number?objects.progress->music.audio_serial:play.gym.audio_serial;
+        if(music_selected==0 || tomb_music_source(restored_track)==-3)playing_track=restored_track;
+        if(music_selected==0){requested_music_track=restored_track;playing_music_serial=next_number?objects.progress->music.audio_serial:play.gym.audio_serial;}
     }else{play.inventory=carried;level_inventory=carried;play.gameplay_options=carried_options;tomb_enemies_configure(&objects,(carried_options&TOMB_NO_ENEMIES)!=0);tomb_shooter_start(&play,carried_mode);
         if(carried_options&TOMB_CONSISTENT_WEAPONS){
             int slot=carried_weapon==4?1:carried_weapon==2?2:carried_weapon==3?3:0;
@@ -984,7 +1059,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     title_mode=death_menu=slot_menu=options_ring=new_game_menu=0;
     inventory_open=inventory_stats=inventory_selected=draw_requested=paused=0;
     render_reset();
-    if(!saved){camera.ready=0;render_reset();objects.progress->music.current_track=source_selected==0?0:tomb_music_level_track(next_number);}
+    if(!saved){camera.ready=0;render_reset();objects.progress->music.current_track=music_selected==0?0:tomb_music_level_track(next_number);}
     camera_bounce=0;pose_mode=0;orbit=0;distance=1536;camera_hold=elapsed=accumulator=0;
     if(!make_tiles()){running=0;return 0;}
     sound_failed=0;if(tomb_sound_bank_load(&sound_bank,level)){tomb_sound_init(&sound_mixer,&sound_bank);sound_output=tomb_sound_output_open(&sound_mixer);
@@ -1283,7 +1358,10 @@ static int draw(void) {
     }
     if(caves && objects.hazards)for(int i=0;i<256;i++){const TombHazardEffect *e=objects.hazards->effects+i;if(e->active){if(render_visible(1+objects.count+TOMB_DART_CAPACITY+(size_t)i,e->room))draw_hazard_effect(e,1+objects.count+TOMB_DART_CAPACITY+(size_t)i,4096);}}
     if(!cinema_mode)water_particles_draw();
-    int lara_ok=cinema_mode?1:lara();if(!cinema_mode)vr_hands_draw();
+    /* FPS hands clear world depth. Keep them after the PS1 water pass so
+       opaque walls still occlude water; world-space Lara stays before it. */
+    int defer_fps=visual->rgba_tiles && fps_overlay_active();
+    int lara_ok=cinema_mode || defer_fps?1:lara();if(!cinema_mode)vr_hands_draw();
     if(visual->rgba_tiles){
         room_additive_pass=1;glPushMatrix();glLoadMatrixd(view);
         for(size_t i=0;i<level->room_count;i++){
@@ -1295,6 +1373,8 @@ static int draw(void) {
         }
         glPopMatrix();glDisable(GL_SCISSOR_TEST);room_additive_pass=0;
     }
+    water_room=0;
+    if(defer_fps)lara_ok=lara();
     water_eye=water_room=0; GLenum gl_error=glGetError();
     if(!lara_ok || gl_error)fprintf(stderr,"draw error: Lara=%d GL=%u state=%d animation=%d frame=%d\n",lara_ok,(unsigned)gl_error,play.lara.actor.current,play.lara.actor.animation,play.lara.actor.frame);
     return lara_ok && gl_error==GL_NO_ERROR;
@@ -1532,7 +1612,7 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
         if(wp=='P') paused=!paused;
         if(!play.shooter.mode && wp==bindings[9] && !(lp&(1L<<30)))draw_requested=1;
         if(wp=='R') { xr.reset=1;int mode=play.shooter.mode;uint32_t custom_options=play.gameplay_options;cutscene_seen=0;water_particles_reset();tomb_objects_reset(&objects); audio_stop();tomb_sound_output_reset(sound_output);paused=0;camera_hold=0;camera.ready=0;render_reset(); orbit=0; distance=1536; elapsed=0; accumulator=0; pose_mode=0; tomb_playtest_init(&play,level,sine_table,visual); play.movement_only=caves;play.objects=caves?&objects:NULL;if(level_number==0){play.inventory.counts[0]=0;play.inventory.ammo[0]=0;}tomb_gameplay_start(&play,custom_options);tomb_shooter_start(&play,mode);level_inventory=play.inventory; }
-        if(wp=='R'){objects.progress->music.current_track=source_selected==0?0:tomb_music_level_track(level_number);draw_requested=0;inventory_open=death_menu=slot_menu=0;play.inventory=level_inventory;}
+        if(wp=='R'){objects.progress->music.current_track=music_selected==0?0:tomb_music_level_track(level_number);draw_requested=0;inventory_open=death_menu=slot_menu=0;play.inventory=level_inventory;}
         return 0;
     }
     return DefWindowProcA(w,msg,wp,lp);
@@ -1644,6 +1724,7 @@ int main(int argc,char **argv) {
         asset_path(path,level_choices[level_number].file);
     }
     level=tomb_level_load(path,error,sizeof error);
+    if(level)level->music_edition=music_selected==0?2:1;
     if(!level || !(visual=tomb_visual_load(level,error,sizeof error)) || !tomb_lara_start(level,&start)) {
         if(shot){FILE *failure=fopen("build/level-load-error.txt","w");if(failure){fprintf(failure,"%s: %s (level=%d visual=%d)\n",path,error,level!=NULL,visual!=NULL);fclose(failure);}}
         else MessageBoxA(NULL,error[0]?error:"Lara start data is unavailable.","Cannot load level",MB_ICONERROR); return 1;
@@ -1659,7 +1740,7 @@ int main(int argc,char **argv) {
     if(!tomb_playtest_init(&play,level,sine_table,visual)) return 1;
     if(level_number==0){play.inventory.counts[0]=0;play.inventory.ammo[0]=0;}
     play.movement_only=caves;play.objects=caves?&objects:NULL;level_inventory=play.inventory;
-    objects.progress->music.current_track=source_selected==0?0:tomb_music_level_track(level_number);
+    objects.progress->music.current_track=music_selected==0?0:tomb_music_level_track(level_number);
     if(interest_test){if(level_number!=1)return 1;interest_start();}
     if(city_test){if(level_number!=2 || city_test<1 || city_test>8 || !shot)return 1;city_start(city_test-1);}
     if(shotgun_test){if(!caves || !shot)return 1;tomb_inventory_add(&play.inventory,85);play.inventory.ammo[1]=120;play.requested_weapon=4;}
@@ -2091,7 +2172,7 @@ int main(int argc,char **argv) {
         if(!shot && !pose_mode && !paused && !inventory_pauses() && !objects.progress->complete && focused)camera_alpha=accumulator*30;
         if(!shot) {
             int suspended=paused || inventory_pauses() || objects.progress->complete || !focused;
-            audio_update(suspended);
+            audio_update(suspended,dt);
             if(sound_output && !tomb_sound_output_update(sound_output,suspended))sound_failed=1;
             if(ring_sound_output && !tomb_sound_output_update(ring_sound_output,!focused))sound_failed=1;
         }

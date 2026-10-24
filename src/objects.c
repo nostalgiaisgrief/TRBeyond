@@ -408,7 +408,7 @@ static int trigger(TombObjects *w,size_t index,int grounded,int heavy,int weapon
             w->current_strength=tomb_word(sink->room*6);
         } else if(action>=3 && action<=5)flip|=tomb_flip_action(w,(int)action,(int)id,(int)type,flags);
         else if(action==9)effect=(int)id;
-        else if(action==7 || action==8 || action==10)tomb_progress_action_source(w->progress,(int)action,(int)id,flags,(int)type,w->level->asset.edition==2);
+        else if(action==7 || action==8 || action==10)tomb_progress_action_source(w->progress,(int)action,(int)id,flags,(int)type,w->level->music_edition==2);
         else if(action!=6)++w->deferred_actions;
         if(word&0x8000)break;
     }

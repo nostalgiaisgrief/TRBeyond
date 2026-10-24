@@ -55,6 +55,7 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
     fclose(file); file=NULL;
     int format=tomb_asset_open(&l->asset,l->file_data,l->file_size);
     if(format<0){why="invalid, corrupt or unsupported Beyond level";goto fail;}
+    l->music_edition=(int)l->asset.edition;
     Reader r={l->file_data,l->file_size,0,0};
     if(!format && read_count(&r,4)!=32) { why="expected original TR1 PHD version 32"; goto fail; }
     section(&r,l,BA_TEX8);
