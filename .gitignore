@@ -18,6 +18,7 @@
 # Game and installer build scripts.
 !/build-trbeyond.ps1
 !/build-setup.ps1
+!/build-release.ps1
 !/tools/build-version.ps1
 
 # Installer and original-game asset import.

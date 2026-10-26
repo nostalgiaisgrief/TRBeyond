@@ -34,7 +34,11 @@ VSVersionInfo(
  StringStruct('OriginalFilename', '$setupName.exe')])]),
  VarFileInfo([VarStruct('Translation', [1033,1200])])])
 "@ | Set-Content -LiteralPath $setupVersionFile -Encoding utf8
-    & $Python -m PyInstaller --noconfirm --clean --onefile --windowed --name $setupName --version-file $setupVersionFile --distpath dist/setup --workpath build/setup-pyinstaller --specpath build/setup-bundle --paths tools --collect-all av --copy-metadata av --add-data "$payload;payload" --add-data "$releaseVersionFile;." tools/setup_wizard.py *> build/setup-build.log
-    if($LASTEXITCODE){throw 'Wizard build failed; see build/setup-build.log'}
+    # PyInstaller logs INFO messages to stderr. Windows PowerShell 5.1 can
+    # turn redirected stderr into terminating errors under Stop. Let Python
+    # capture both streams directly, preserving the actual build exit code.
+    $buildRunner = "import subprocess, sys; log = open(sys.argv[1], 'wb'); result = subprocess.run([sys.executable] + sys.argv[2:], stdout=log, stderr=subprocess.STDOUT); log.close(); sys.exit(result.returncode)"
+    & $Python -c $buildRunner build/setup-build.log -m PyInstaller --noconfirm --clean --onefile --windowed --name $setupName --version-file $setupVersionFile --distpath dist/setup --workpath build/setup-pyinstaller --specpath build/setup-bundle --paths tools --collect-all av --copy-metadata av --add-data "$payload;payload" --add-data "$releaseVersionFile;." tools/setup_wizard.py
+    if($LASTEXITCODE -ne 0){throw 'Wizard build failed; see build/setup-build.log'}
     Get-FileHash -LiteralPath "dist/setup/$setupName.exe" -Algorithm SHA256
 } finally {Pop-Location}

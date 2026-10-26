@@ -295,6 +295,67 @@ def update_installation(selected, payload, progress=lambda value, text: None, ca
                 shutil.rmtree(stage)
 
 
+def dos_source_kind(selected):
+    path = Path(selected)
+    if path.suffix.lower() == '.cue':
+        return 'cue'
+    if path.name.lower() == 'game.gog':
+        return 'gog'
+    raise ValueError('Select a DOS CUE file or GAME.GOG for DOS / Steam / GOG.')
+
+
+def install_sources(selections, destination, payload, progress=lambda value, text: None, cancel=None):
+    """Publish all selected editions together, or leave the destination untouched."""
+    selections = list(selections)
+    editions = [('PS1' if kind == 'ps1' else 'DOS') for kind, _ in selections]
+    if not selections or any(kind not in ('cue', 'gog', 'ps1') for kind, _ in selections):
+        raise ValueError('Select at least one supported game source.')
+    if len(set(editions)) != len(editions):
+        raise ValueError('Select only one original copy for each source.')
+    destination = Path(destination).resolve()
+    if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):
+        raise ValueError('Choose a new or empty installation folder.')
+    for kind, selected in selections:
+        check_cancel(cancel)
+        inspect_source(kind, selected)
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    space = sum(10 if edition == 'PS1' else 2 for edition in editions)
+    if shutil.disk_usage(destination.parent).free < space * 1024**3:
+        raise ValueError(f'At least {space} GB of free space is required.')
+    stage = Path(tempfile.mkdtemp(prefix='.trb-multi-', dir=destination.parent)).resolve()
+    if stage.parent != destination.parent or not stage.name.startswith('.trb-multi-'):
+        raise ValueError('Invalid staging directory.')
+    try:
+        bundle = stage/'bundle'
+        for index, ((kind, selected), edition) in enumerate(zip(selections, editions)):
+            check_cancel(cancel)
+            target = bundle if index == 0 else stage/edition
+            install(kind, selected, target, payload,
+                    lambda value, text, index=index, edition=edition:
+                        progress((index + value/100) * 95/len(selections), f'{edition}: {text}'), cancel)
+            if index:
+                placeholder = bundle/'Source'/edition
+                # The earlier importer creates empty folders for other editions.
+                if any(p.is_file() or p.is_symlink() for p in placeholder.rglob('*')):
+                    raise ValueError('Unexpected data in an unselected source folder.')
+                shutil.rmtree(placeholder)
+                os.rename(target/'Source'/edition, placeholder)
+        preferred = next(edition for edition in ('PS1', 'DOS', 'TRR') if edition in editions)
+        (bundle/'trb-install.json').write_text(json.dumps(dict(
+            format=2, asset_format=ASSET_VERSION, portable=True, sources=editions)))
+        (bundle/'settings.ini').write_text(
+            f'[Game]\nlevel_source={preferred}\nmusic_speech_source={preferred}\nfmv_source={preferred}\n')
+        check_cancel(cancel)
+        if destination.exists():
+            destination.rmdir()  # Refuse if another process populated it meanwhile.
+        os.rename(bundle, destination)
+        progress(100, 'Installation complete')
+        return destination
+    finally:
+        if stage.exists() and stage.parent == destination.parent and stage.name.startswith('.trb-multi-'):
+            shutil.rmtree(stage)
+
+
 def install(kind, selected, destination, payload, progress=lambda value, text: None, cancel=None):
     if kind == 'ps1':
         from import_ps1 import install as install_ps1

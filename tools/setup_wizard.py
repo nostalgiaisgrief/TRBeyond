@@ -9,7 +9,7 @@ import threading
 import tkinter as tk
 from tkinter import filedialog, messagebox, ttk
 
-from setup_import import install, inspect_source, inspect_installation
+from setup_import import install, install_sources, dos_source_kind, inspect_source, inspect_installation
 
 
 VERSION_PATH = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent)) / 'version.txt'
@@ -22,7 +22,7 @@ class Wizard:
     def __init__(self, root):
         self.root = root
         root.title(f'Tomb Raider Beyond — Version {VERSION}')
-        root.geometry('720x620'); root.minsize(720, 620)
+        root.geometry('720x700'); root.minsize(720, 700)
         style = ttk.Style(root)
         style.configure('Step.TLabel', font=('Segoe UI', 9), foreground='#666666')
         style.configure('Heading.TLabel', font=('Segoe UI', 17, 'bold'))
@@ -33,10 +33,10 @@ class Wizard:
         self.cancel = threading.Event()
         self.events = queue.Queue()
         self.destination = tk.StringVar(value=str(Path.home()/'Games'/'Tomb Raider Beyond'))
-        self.kind = tk.StringVar(value='cue')
-        self.selected = tk.StringVar()
+        self.kind = tk.StringVar(value='new')
+        self.source_paths = {edition: tk.StringVar() for edition in ('DOS', 'PS1')}
+        self.source_enabled = {edition: tk.BooleanVar(value=edition == 'DOS') for edition in ('DOS', 'PS1')}
         self.status = tk.StringVar()
-        self.dos_enabled = tk.IntVar(value=1)
         self.payload = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent/'build'/'setup-bundle'))/'payload'
         ttk.Label(root, text='Tomb Raider Beyond', font=('Segoe UI', 22, 'bold')).pack(anchor='w', padx=28, pady=(24, 6))
         ttk.Label(root, text=f'Version {VERSION} • Portable installation • Bring your own original game data').pack(anchor='w', padx=28)
@@ -55,7 +55,6 @@ class Wizard:
         for child in self.body.winfo_children(): child.destroy()
         self.back.configure(state='normal' if self.page in (1, 2) else 'disabled')
         updating = self.kind.get() == 'update'
-        self.dos_enabled.set(1 if self.kind.get() in ('cue', 'gog') else 0)
         self.next.configure(text=('Update' if updating else 'Install') if self.page == 2 else 'Finish' if self.page == 4 else 'Next', state='disabled' if self.page == 3 else 'normal')
         headings = ('Choose an installation folder', 'Locate your original game data',
                     'Ready to update' if updating else 'Ready to install',
@@ -83,29 +82,40 @@ class Wizard:
             ttk.Entry(row, textvariable=self.destination).pack(side='left', fill='x', expand=True)
             ttk.Button(row, text='Browse…', command=self.browse_destination).pack(side='right', padx=(8, 0))
         elif self.page == 1:
-            ttk.Radiobutton(self.body, text='Update existing installation', variable=self.kind,
-                            value='update', command=self.clear_source).pack(anchor='w', pady=(0, 12))
-            row = ttk.Frame(self.body); row.pack(anchor='w', pady=(0, 12))
-            ttk.Checkbutton(row, text='DOS / Steam / GOG', variable=self.dos_enabled, state='disabled').pack(side='left')
-            ttk.Checkbutton(row, text='Remaster — coming later', state='disabled').pack(side='left')
-            ttk.Radiobutton(self.body, text='DOS CD image (.cue and its associated .bin files)', variable=self.kind, value='cue', command=self.clear_source).pack(anchor='w', pady=4)
-            ttk.Radiobutton(self.body, text='Steam/GOG installation folder (GAME.GOG and music files)', variable=self.kind, value='gog', command=self.clear_source).pack(anchor='w', pady=4)
-            ttk.Radiobutton(self.body, text='PS1 CD image (.cue and its associated .bin files)', variable=self.kind, value='ps1', command=self.clear_source).pack(anchor='w', pady=4)
-            row = ttk.Frame(self.body); row.pack(fill='x', pady=12)
-            ttk.Entry(row, textvariable=self.selected).pack(side='left', fill='x', expand=True)
-            ttk.Button(row, text='Browse…', command=self.browse_source).pack(side='right', padx=(8, 0))
-            self.label('Choose the Tomb Raider Beyond folder. Existing game data, settings and saves will be kept.' if updating else
-                       'Select one source. For Steam/GOG, choose the folder containing GAME.GOG and tracks 02–10. Original files will not be changed.')
+            ttk.Radiobutton(self.body,
+                            text='New installation - Import game data from one of your owned copies',
+                            variable=self.kind, value='new', command=self.show).pack(anchor='w', pady=4)
+            ttk.Radiobutton(self.body,
+                            text="Update existing installation - Don't import game assets",
+                            variable=self.kind, value='update', command=self.show).pack(anchor='w', pady=(4, 14))
+            if updating:
+                row = ttk.Frame(self.body); row.pack(fill='x', pady=(0, 12))
+                ttk.Entry(row, textvariable=self.destination).pack(side='left', fill='x', expand=True)
+                ttk.Button(row, text='Browse…', command=self.browse_update).pack(side='right', padx=(8, 0))
+                self.label('Choose the Tomb Raider Beyond folder. Existing game data, settings and saves will be kept.')
+            else:
+                self.label('Tick the sources you want to import.')
+                self.label('Importing from multiple sources allows you to mix and match assets between versions within Tomb Raider Beyond - For example: DOS audio with PS1 videos')
+                for edition, label in (('DOS', 'DOS / Steam / GOG'), ('PS1', 'PS1')):
+                    ttk.Checkbutton(self.body, text=label, variable=self.source_enabled[edition],
+                                    command=self.show).pack(anchor='w', pady=(0, 5))
+                    row = ttk.Frame(self.body); row.pack(fill='x', pady=(0, 12))
+                    state = 'normal' if self.source_enabled[edition].get() else 'disabled'
+                    ttk.Entry(row, textvariable=self.source_paths[edition], state=state).pack(side='left', fill='x', expand=True)
+                    ttk.Button(row, text='Browse…', state=state,
+                               command=lambda edition=edition: self.browse_source(edition)).pack(side='right', padx=(8, 0))
+                ttk.Checkbutton(self.body, text='Remaster — coming later', state='disabled').pack(anchor='w', pady=(0, 12))
+                self.label('DOS: choose a .cue file or GAME.GOG. PS1: choose a .cue file.')
         elif self.page == 2:
             self.label(f'Installation folder:\n{self.destination.get()}')
             if updating:
                 self.label('Installation found. Ready to Update.')
                 self.label('Runtime files will be updated. Existing game data, settings and saves will be kept.')
             else:
-                edition = 'PS1' if self.kind.get() == 'ps1' else 'DOS'
-                self.label(f'{edition} source:\n{self.selected.get()}')
+                for kind, selected in self.selections():
+                    self.label(f'{"PS1" if kind == "ps1" else "DOS"} source:\n{selected}')
                 self.label('Required files found. Ready to Install.')
-                space = 10 if self.kind.get() == 'ps1' else 2
+                space = sum(10 if kind == 'ps1' else 2 for kind, _ in self.selections())
                 self.label(f'Allow several minutes for movie conversion. At least {space} GB of free space is required.')
         elif self.page == 3:
             self.progress = ttk.Progressbar(self.body, maximum=100); self.progress.pack(fill='x', pady=18)
@@ -117,9 +127,24 @@ class Wizard:
             ttk.Button(self.body, text='Launch Tomb Raider Beyond', command=self.launch).pack(anchor='w')
             self.stop.configure(state='disabled')
 
-    def clear_source(self):
-        self.selected.set(self.destination.get() if self.kind.get() == 'update' else '')
-        self.show()
+    def selections(self):
+        selected = []
+        for edition in ('DOS', 'PS1'):
+            if self.source_enabled[edition].get():
+                path = self.source_paths[edition].get().strip()
+                if not path:
+                    raise ValueError(f'Choose the {edition} game data file.')
+                if edition == 'PS1' and Path(path).suffix.lower() != '.cue':
+                    raise ValueError('Select a PS1 CUE file.')
+                selected.append(('ps1' if edition == 'PS1' else dos_source_kind(path), path))
+        if not selected:
+            raise ValueError('Tick at least one source to import.')
+        return selected
+
+    def browse_update(self):
+        selected = filedialog.askdirectory(title='Select the Tomb Raider Beyond installation folder')
+        if selected:
+            self.destination.set(selected)
 
     def browse_destination(self):
         selected = filedialog.askdirectory(title='Choose a parent folder for Tomb Raider Beyond')
@@ -130,15 +155,11 @@ class Wizard:
             else:
                 self.destination.set(str(folder/'Tomb Raider Beyond'))
 
-    def browse_source(self):
-        if self.kind.get() == 'update':
-            selected = filedialog.askdirectory(title='Select the Tomb Raider Beyond installation folder')
-        elif self.kind.get() in ('cue', 'ps1'):
-            edition = 'PS1' if self.kind.get() == 'ps1' else 'DOS'
-            selected = filedialog.askopenfilename(title=f'Select the {edition} Tomb Raider CUE file', filetypes=[('CD cue sheet', '*.cue')])
-        else:
-            selected = filedialog.askdirectory(title='Select the folder containing GAME.GOG and music tracks')
-        if selected: self.selected.set(selected)
+    def browse_source(self, edition):
+        types = [('DOS CUE or GAME.GOG', '*.cue GAME.GOG'), ('CD cue sheet', '*.cue'), ('Steam/GOG disc image', 'GAME.GOG')] if edition == 'DOS' else [('CD cue sheet', '*.cue')]
+        selected = filedialog.askopenfilename(title=f'Select your {edition} game data', filetypes=types)
+        if selected:
+            self.source_paths[edition].set(selected)
 
     def go_back(self):
         if not self.busy: self.page -= 1; self.show()
@@ -154,20 +175,20 @@ class Wizard:
                 self.destination.set(str(path))
                 if path.is_dir() and any(path.iterdir()):
                     inspect_installation(path)
-                    self.kind.set('update'); self.selected.set(str(path))
+                    self.kind.set('update')
             elif self.page == 1:
-                if not self.selected.get().strip(): raise ValueError('Select an installation folder.' if self.kind.get() == 'update' else 'Select a CUE file or Steam/GOG folder.')
                 self.root.configure(cursor='watch'); self.root.update_idletasks()
                 if self.kind.get() == 'update':
-                    self.destination.set(str(inspect_installation(self.selected.get())))
+                    self.destination.set(str(inspect_installation(self.destination.get())))
                 else:
                     target = Path(self.destination.get())
                     if target.exists() and any(target.iterdir()):
                         raise ValueError('Choose a new or empty folder in Step 1 for a new installation, or select Update existing installation.')
-                    inspect_source(self.kind.get(), self.selected.get())
+                    for kind, selected in self.selections():
+                        inspect_source(kind, selected)
             elif self.page == 2:
                 self.page = 3; self.busy = True; self.cancel.clear(); self.show()
-                args = (self.kind.get(), self.selected.get(), self.destination.get())
+                args = (self.kind.get(), [] if self.kind.get() == 'update' else self.selections(), self.destination.get())
                 threading.Thread(target=self.worker, args=args, daemon=True).start(); return
             self.page += 1; self.show()
         except Exception as error:
@@ -175,10 +196,13 @@ class Wizard:
         finally:
             self.root.configure(cursor='')
 
-    def worker(self, kind, selected, destination):
+    def worker(self, kind, selections, destination):
         try:
-            install(kind, selected, destination, self.payload,
-                    lambda value, text: self.events.put(('progress', value, text)), self.cancel)
+            progress = lambda value, text: self.events.put(('progress', value, text))
+            if kind == 'update':
+                install('update', destination, destination, self.payload, progress, self.cancel)
+            else:
+                install_sources(selections, destination, self.payload, progress, self.cancel)
             self.events.put(('done',))
         except Exception as error:
             self.events.put(('error', str(error)))
