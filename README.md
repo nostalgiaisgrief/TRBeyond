@@ -29,9 +29,11 @@ Plus a good chunk of customisation options ranging from Quality-of-Life improvem
 I'm not really one for modernising graphics, and the only visual tweaks have been around visual bugs that were present in the DOS version and which detracted from the experience.
 
 
-## Release Package
+## Installation
 
-As soon as the first release is up, it'll be linked here. But you could download the source and run **build-trbeyond.ps1** followed by **build-setup.ps1** to get you an installer to help extract assests from your original CD or Steam/GOG installations.
+1. Download the latest release from here: https://github.com/nostalgiaisgrief/TRBeyond/releases/latest
+2. Run the .exe.
+3. Follow the wizard to import game assets from your legally own versions.
 
 
 ## What's Included?
