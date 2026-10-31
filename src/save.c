@@ -87,13 +87,13 @@ static void state(Stream *s,TombPlaytest *p,TombObjects *w,TombFollowCamera *c,T
 #undef FIELD
 static unsigned char *read_file(const char *path,Header *h){
  FILE *f=fopen(path,"rb");if(!f)return NULL;
- if(fread(h,sizeof *h,1,f)!=1 || memcmp(h->magic,"TOMBSV1",8) || (h->version!=1 && h->version!=2 && h->version!=3 && h->version!=4 && h->version!=5 && h->version!=6 && h->version!=7 && h->version!=8 && h->version!=9 && h->version!=10 && h->version!=11 && h->version!=12 && h->version!=13 && h->version!=14 && h->version!=15) || (h->layout!=layout((int)h->version) && h->layout!=layout_variant((int)h->version,1)) || h->level>15 || !h->bytes || h->bytes>SAVE_LIMIT){fclose(f);return NULL;}
+ if(fread(h,sizeof *h,1,f)!=1 || memcmp(h->magic,"TOMBSV1",8) || (h->version!=1 && h->version!=2 && h->version!=3 && h->version!=4 && h->version!=5 && h->version!=6 && h->version!=7 && h->version!=8 && h->version!=9 && h->version!=10 && h->version!=11 && h->version!=12 && h->version!=13 && h->version!=14 && h->version!=15) || (h->layout!=layout((int)h->version) && h->layout!=layout_variant((int)h->version,1)) || h->level>19 || !h->bytes || h->bytes>SAVE_LIMIT){fclose(f);return NULL;}
  unsigned char *data=malloc(h->bytes);if(!data){fclose(f);return NULL;}
  int ok=fread(data,1,h->bytes,f)==h->bytes && fgetc(f)==EOF && hash(data,h->bytes)==h->checksum;fclose(f);if(!ok){free(data);return NULL;}return data;
 }
 int tomb_save_level(const char *path){Header h;unsigned char *data=read_file(path,&h);if(!data)return -1;free(data);return (int)h.level;}
 static int write_state(const char *path,int number,const TombPlaytest *p,const TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline){
- if(number<0 || number>15 || !p || p->lara.health<=0 || !w || w->progress->complete)return 0;
+ if(number<0 || number>19 || !p || p->lara.health<=0 || !w || w->progress->complete)return 0;
  unsigned char *data=malloc(SAVE_LIMIT);if(!data)return 0;
  Stream s={data,0,SAVE_LIMIT,0,1,15};state(&s,(TombPlaytest *)p,(TombObjects *)w,(TombFollowCamera *)c,(TombInventory *)baseline);
  Header h={{'T','O','M','B','S','V','1',0},15,layout(15),(uint32_t)number,hash(w->level->file_data,w->level->file_size),(uint32_t)s.at,hash(data,s.at)};

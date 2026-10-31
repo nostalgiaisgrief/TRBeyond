@@ -12,6 +12,30 @@ static void section(Read *r,const TombLevel *l,int id) {
 }
 static uint16_t u16(const unsigned char *p) { return (uint16_t)(p[0]|(uint16_t)p[1]<<8); }
 static uint32_t u32(const unsigned char *p) { return u16(p)|(uint32_t)u16(p+2)<<16; }
+int tomb_visual_water_face(const TombVisual *v,size_t room,const unsigned char *face,int n){
+    if(room>=v->room_count || (n!=3 && n!=4))return 0;
+    unsigned texture=u16(face+2*n)&32767;
+    if(texture>=v->texture_count || !u16(v->textures+20*texture))return 0;
+    const TombMeshView *m=v->rooms+room;int x=0,z=0,y=0;
+    for(int j=0;j<n;j++){
+        unsigned index=u16(face+2*j);if(index>=m->vertex_count)return 0;
+        const unsigned char *p=m->vertices+index*m->vertex_stride;
+        int py=(int16_t)u16(p+2);if(j && y!=py)return 0;y=py;
+        x+=(int16_t)u16(p);z+=(int16_t)u16(p+4);
+    }
+    for(size_t k=0;k<v->portals[room].count;k++){
+        const unsigned char *p=v->portals[room].data+32*k;unsigned other=u16(p);
+        if(other>=v->level->room_count || !((v->level->rooms[room].flags^v->level->rooms[other].flags)&1))continue;
+        int xmin=32767,xmax=-32768,zmin=32767,zmax=-32768,flat=1;
+        for(int j=0;j<4;j++){
+            int px=(int16_t)u16(p+8+6*j),py=(int16_t)u16(p+10+6*j),pz=(int16_t)u16(p+12+6*j);
+            /* Opposite portal faces may be inset by one world unit. */
+            if(abs(py-y)>1)flat=0;if(px<xmin)xmin=px;if(px>xmax)xmax=px;if(pz<zmin)zmin=pz;if(pz>zmax)zmax=pz;
+        }
+        if(flat && x>=xmin*n && x<=xmax*n && z>=zmin*n && z<=zmax*n)return 1;
+    }
+    return 0;
+}
 static const unsigned char *take(Read *r,size_t n,size_t size)
 {
     if(r->bad || !size || n>(r->n-r->at)/size) { r->bad=1; return NULL; }

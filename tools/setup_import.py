@@ -23,6 +23,33 @@ PICTURES = ['TITLEH', 'END', 'CRED1', 'CRED2', 'CRED3']
 RUNTIME_FILES = ['TombRaiderBeyond.exe', 'openxr_loader.dll', 'OPENXR-LICENSE.txt']
 
 
+def bundled_campaign_files(payload):
+    """Only setup-owned UB assets may be replaced; never saves or user data."""
+    base = Path(payload)/'Source/UB'
+    if not base.exists():
+        return []  # Development payloads may omit the optional expansion.
+    from prepare_ub import LEVELS as UB_LEVELS, PICTURES as UB_PICTURES
+    files = [f'DATA/{n}.TBL' for n in UB_LEVELS] + [f'DATA/{n}.PCX' for n in UB_PICTURES]
+    files += [f'Original/DATA/{n}.TUB' for n in UB_LEVELS] + [f'Original/DATA/{n}.PCX' for n in UB_PICTURES]
+    records = {r['path']: r for r in json.loads((base/'import-manifest.json').read_text())['files']}
+    for name in files:
+        file = base/name
+        if not file.is_file() or name not in records or hashlib.sha256(file.read_bytes()).hexdigest() != records[name]['sha256']:
+            raise ValueError(f'Invalid bundled Unfinished Business file: {name}')
+    return ['Source/UB/'+name for name in files + ['import-manifest.json']]
+
+
+def install_bundled_campaign(destination, payload):
+    files = bundled_campaign_files(payload)
+    for name in files:
+        target = Path(destination)/name
+        target.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(Path(payload)/name, target)
+    if files:
+        for folder in ('SAVES', 'AUDIO', 'FMV'):
+            (Path(destination)/'Source/UB'/folder).mkdir(parents=True, exist_ok=True)
+
+
 class Cancelled(Exception):
     pass
 
@@ -242,7 +269,8 @@ def update_installation(selected, payload, progress=lambda value, text: None, ca
     stage = Path(tempfile.mkdtemp(prefix='.trb-update-', dir=destination.parent)).resolve()
     if stage.parent != destination.parent or not stage.name.startswith('.trb-update-'):
         raise ValueError('Invalid update staging directory.')
-    replacements, replaced, keep_backup = RUNTIME_FILES + ['sine.bin'], [], False
+    campaign_files = bundled_campaign_files(payload)
+    replacements, replaced, keep_backup = RUNTIME_FILES + ['sine.bin'] + campaign_files, [], False
     # Keep existing shortcuts working without leaving an obsolete game binary.
     legacy_name = 'Tomb Raider Beyond.exe'
     if (destination / legacy_name).exists():
@@ -254,19 +282,27 @@ def update_installation(selected, payload, progress=lambda value, text: None, ca
         for name in RUNTIME_FILES:
             check_cancel(cancel)
             shutil.copy2(payload / name, stage / 'new' / name)
+        install_bundled_campaign(stage/'new', payload)
         (stage / 'new' / 'sine.bin').write_bytes(generated_sine())
         if legacy_name in replacements:
             shutil.copy2(payload / 'TombRaiderBeyond.exe', stage / 'new' / legacy_name)
         for name in replacements:
             current = destination / name
+            for parent in current.parents:
+                if parent == destination:
+                    break
+                if parent.is_symlink():
+                    raise ValueError(f'Cannot update through linked folder: {parent}')
             if current.is_symlink() or (current.exists() and not current.is_file()):
                 raise ValueError(f'Cannot replace runtime file: {name}')
             if current.exists():
+                (stage/'backup'/name).parent.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(current, stage / 'backup' / name)
         try:
             for index, name in enumerate(replacements):
                 check_cancel(cancel)
-                progress(30 + index*15, f'Updating {name}')
+                progress(30 + index*65//len(replacements), f'Updating {name}')
+                (destination/name).parent.mkdir(parents=True, exist_ok=True)
                 os.replace(stage / 'new' / name, destination / name)
                 replaced.append(name)
             check_cancel(cancel)
@@ -287,6 +323,9 @@ def update_installation(selected, payload, progress=lambda value, text: None, ca
             if isinstance(error, PermissionError):
                 raise ValueError('Cannot replace runtime files. Close Tomb Raider Beyond and try again; also check folder permissions. The previous runtime was restored.') from error
             raise
+        if campaign_files:
+            for folder in ('SAVES', 'AUDIO', 'FMV'):
+                (destination/'Source/UB'/folder).mkdir(parents=True, exist_ok=True)
         progress(100, 'Update complete')
         return destination
     finally:
@@ -382,6 +421,7 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
         (stage/'Custom').mkdir()
         for name in RUNTIME_FILES:
             shutil.copy2(payload/name, stage/name)
+        install_bundled_campaign(stage, payload)
         (stage/'sine.bin').write_bytes(generated_sine())
         disc = Image(plan['image'], plan['width'], plan['offset'])
         try:

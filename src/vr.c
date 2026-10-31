@@ -173,7 +173,7 @@ static int body_clear(TombVr *v,TombPlaytest *p,const double origin[3],int step)
     }
     if(p->objects)for(size_t i=0;i<p->objects->count;i++){
         const TombObject *o=&p->objects->items[i];
-        if(o->object==38 && (o->actor.flags&6)!=6 && !(p->gameplay_options&TOMB_INVINCIBLE)){
+        if(o->object==38 && (o->actor.flags&6)!=6 && (! (p->gameplay_options&TOMB_INVINCIBLE) || (o->actor.flags&6)!=2)){
             int16_t b[6];if(tomb_visual_item_bounds(p->visual,38,&o->actor,b)){
                 double cx=o->actor.x+(b[0]+b[1])*.5,cy=o->actor.y+(b[2]+b[3])*.5,cz=o->actor.z+(b[4]+b[5])*.5;
                 double r=fmax(b[1]-b[0],fmax(b[3]-b[2],b[5]-b[4]))*.5;

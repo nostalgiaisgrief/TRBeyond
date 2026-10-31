@@ -120,6 +120,9 @@ int tomb_atlantean_spawners_init(TombObjects *w){
         TombObject *o=w->items+i;if(o->object!=161 && o->object!=163 && o->object!=181)continue;
         int type=23;
         if(o->object!=161){int bits=(w->level->items[i].flags&0x3e00)>>9;type=bits==1?21:bits==2?23:bits==4?34:bits==8?22:20;o->flags=0;}
+        /* UB includes empty pods whose selected hatchling has no loaded model.
+           Keep the shell active, but never manufacture an enemy from other meshes. */
+        TombModel hatchling;if(!tomb_visual_model(w->visual,type,&hatchling)){w->enemies->items[i].required=0;continue;}
         int index=tomb_objects_spawn(w,type,&o->actor);if(index<0)return 0;
         TombObject *born=w->items+index;born->actor.flags|=6;
         w->enemies->items[i].required=(int16_t)(index+1);
@@ -138,12 +141,12 @@ int tomb_atlantean_spawners_tick(TombObjects *w,TombAnimContext *ctx,const TombA
         int statue=o->object==161;
         int hatch=statue?abs(dy)<1024 && dx*dx+dz*dz<0xc40000:(o->flags&0x100) || o->object==181 || (llabs(dx)<4096 && llabs(dz)<4096 && abs(dy)<4096);
         if(!c->flags && hatch){
-            int index=c->required-1;if(index<0 || (size_t)index>=w->count)return 0;
+            int index=c->required-1;if(index>=0 && (size_t)index>=w->count)return 0;
             if(!tomb_explode_meshes(w,o,NULL,statue?UINT32_MAX:0xfffe00,0,ctx->sine_quarter))return 0;
             c->flags=1;o->actor.flags&=(uint8_t)~32u;
             if(statue){o->active=0;o->actor.flags|=6;if(ctx->event)ctx->event(ctx->user,5,104,&o->actor);}
             else o->actor.goal=1;
-            if(!tomb_enemies_birth(w,(size_t)index))return 0;
+            if(index>=0 && !tomb_enemies_birth(w,(size_t)index))return 0;
         }
         if(!statue && !tomb_object_animate(o,ctx))return 0;
     }

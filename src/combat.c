@@ -171,7 +171,14 @@ static int fps_combat(TombPlaytest *p){
     if(!tomb_fps_ready(p)){g->drawn=0;g->status=0;return 1;}
     int slot=p->requested_weapon==4?1:p->requested_weapon==2?2:p->requested_weapon==3?3:0;
     if(!p->inventory.counts[slot])p->requested_weapon=1;
-    if(p->weapon_type!=p->requested_weapon){p->weapon_type=p->requested_weapon;s->fire_delay=0;s->next_hand=0;}
+    if(p->weapon_type!=p->requested_weapon){
+        p->weapon_type=p->requested_weapon;
+        /* Four lowering ticks, one hidden swap, four raising ticks, then
+           the interpolation endpoint. Focus changes do not enter this path. */
+        s->fire_delay=10;s->next_hand=0;
+        g->left.flash=g->right.flash=0;
+        g->left.frame=g->right.frame=p->weapon_type==4?47:4;
+    }
     p->sidearm_type=p->weapon_type==4?1:p->weapon_type;
     g->status=4;g->drawn=(s->dual || p->weapon_type==4)?3:2;
     tomb_shooter_target(p);g->left.lock=g->right.lock=1;

@@ -1,7 +1,7 @@
 #include "progression.h"
 int tomb_music_level_track(int level) {
-    static const int tracks[16]={0,57,57,57,57,59,59,59,58,58,59,59,59,58,60,60};
-    return level>=0 && level<16?tracks[level]:0;
+    static const int tracks[20]={0,57,57,57,57,59,59,59,58,58,59,59,59,58,60,60,59,59,60,60};
+    return level>=0 && level<20?tracks[level]:0;
 }
 int tomb_music_source(int track) {
     if(track==13)return -2;

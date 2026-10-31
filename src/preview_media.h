@@ -116,7 +116,7 @@ static int cinematic_effect_check(void){
     size_t bytes=(size_t)width*height*3;unsigned char *before=malloc(bytes),*after=malloc(bytes);
     if(!before || !after){free(before);free(after);return 0;}
     glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,before);
-    uint32_t saved=effect_ticks;effect_ticks+=6;int ok=draw();
+    uint32_t saved=effect_ticks;effect_ticks+=6;int ok=draw_frame_composite(0);
     glReadPixels(0,0,width,height,GL_RGB,GL_UNSIGNED_BYTE,after);effect_ticks=saved;
     size_t changed=0;for(size_t i=0;i<bytes;i++)changed+=before[i]!=after[i];
     free(before);free(after);FILE *log=fopen("build/cinematic-effects.txt","w");if(log){fprintf(log,"%s: fixed CUT1 camera/actors, %zu colour channels changed by water/texture clock\n",ok && changed?"PASS":"FAIL",changed);fclose(log);}
@@ -141,8 +141,8 @@ static int play_cutscene_sequence(int test,int number){
     }
     unsigned char *wav=NULL,*last_frame_pixels=NULL;MediaAudio audio={0};int ok=1;
     if(!test){
-        int cd=number==1?8:number==2?10:number==3?9:7;if(music_selected==0)cd+=15;
-        snprintf(name,sizeof name,"audio/cd%02d.wav",cd);source_path_for(path,name,music_selected);FILE *f=fopen(path,"rb");long bytes=0;if(f){if(!fseek(f,0,SEEK_END))bytes=ftell(f);rewind(f);if(bytes>0 && bytes<100000000)wav=malloc((size_t)bytes);if(wav && fread(wav,1,(size_t)bytes,f)!=(size_t)bytes){free(wav);wav=NULL;}fclose(f);}
+        int cd=number==1?8:number==2?10:number==3?9:7;if(music_source()==0)cd+=15;
+        snprintf(name,sizeof name,"audio/cd%02d.wav",cd);source_path_for(path,name,music_source());FILE *f=fopen(path,"rb");long bytes=0;if(f){if(!fseek(f,0,SEEK_END))bytes=ftell(f);rewind(f);if(bytes>0 && bytes<100000000)wav=malloc((size_t)bytes);if(wav && fread(wav,1,(size_t)bytes,f)!=(size_t)bytes){free(wav);wav=NULL;}fclose(f);}
         TombSoundSample sample;if(!wav || !tomb_sound_sample(&sample,wav,(size_t)bytes) || !media_audio_open(&audio,sample.pcm,(unsigned)(sample.frames*sample.channels*sample.bits/8),sample.rate,sample.channels,sample.bits))ok=0;
     }
     TombLevel *old_level=level;TombVisual *old_visual=visual;TombObjects old_objects=objects;TombPlaytest old_play=play;TombFollowCamera old_camera=camera;
@@ -171,7 +171,7 @@ static int play_cutscene_sequence(int test,int number){
         TombDosCamera shot;if(!tomb_cinematic_camera(&sequence,sine_table,&shot,&cinema_fov,&cinema_roll)){ok=0;break;}
         camera.eye[0]=camera.previous_eye[0]=shot.eye.x;camera.eye[1]=camera.previous_eye[1]=shot.eye.y;camera.eye[2]=camera.previous_eye[2]=shot.eye.z;
         camera.target[0]=camera.previous_target[0]=shot.target.x;camera.target[1]=camera.previous_target[1]=shot.target.y;camera.target[2]=camera.previous_target[2]=shot.target.z;camera.room=shot.eye.room;camera.ready=1;
-        if(!test || sequence.frame%200==0 || sequence.frame==final_frame){glEnable(GL_DEPTH_TEST);if(!draw())ok=0;if(test && number==1 && sequence.frame==800){if(!cinematic_effect_check())ok=0;capture("build/cutscene40.ppm");}if(!test){vr_media_present();display_present(dc);}}
+        if(!test || sequence.frame%200==0 || sequence.frame==final_frame){glEnable(GL_DEPTH_TEST);if(!draw_frame_composite(0))ok=0;if(test && number==1 && sequence.frame==800){if(!cinematic_effect_check())ok=0;capture("build/cutscene40.ppm");}if(!test){vr_media_present();display_present(dc);}}
         if(test && !last_frame_pixels && sequence.frame==final_frame){
             size_t bytes=(size_t)width*height*3;last_frame_pixels=malloc(bytes);
             if(!last_frame_pixels)ok=0;
@@ -182,7 +182,7 @@ static int play_cutscene_sequence(int test,int number){
     }
     if(ok && old_objects.progress && old_objects.progress->complete){
         /* Capture the final scene in the back buffer, independent of window occlusion. */
-        if(!draw())ok=0;
+        if(!draw_frame_composite(0))ok=0;
         free(cinematic_pixels);cinematic_width=width;cinematic_height=height;
         cinematic_pixels=malloc((size_t)width*height*3);
         if(cinematic_pixels){
@@ -205,22 +205,63 @@ static int play_cutscene_sequence(int test,int number){
 static int play_cutscene(int test){return play_cutscene_sequence(test,1);}
 
 /* DOS 2057c: END movie followed by END/CRED1/CRED2/CRED3 pictures. */
+/* Both DOS executables request 60 palette steps in and 20 out, at 60 Hz. */
+#define CREDITS_FADE_OUT (20.0/60.0)
+#define CREDITS_HOLD 15.0
+static float credits_brightness(double elapsed,double fade_start,float fade_from){
+ if(fade_start>=0)return (float)fmax(0,fade_from*(1-(elapsed-fade_start)/CREDITS_FADE_OUT));
+ return (float)fmax(0,fmin(1,fmin(elapsed,(CREDITS_HOLD+CREDITS_FADE_OUT-elapsed)/CREDITS_FADE_OUT)));
+}
+static int ending_picture_path(char *path,int ub,int page){
+ const char *names[]={"END","CRED1","CRED2","CRED3"};
+ int combined=ub && campaign_selected==CAMPAIGN_COMBINED;
+ if(ub && page==(combined?4:1)){ub_path(path,"DATA/CRED0.PCX");return GetFileAttributesA(path)!=INVALID_FILE_ATTRIBUTES;}
+ int index=ub && !combined && page>1?page-1:page;
+ if(!ub || combined){char name[32];snprintf(name,sizeof name,"%s.PCX",names[index]);asset_path(path,name);return GetFileAttributesA(path)!=INVALID_FILE_ATTRIBUTES;}
+ /* UB's unstarred paths read the original CD pictures. Prefer those DOS
+    assets, using available equivalents when installed with another source. */
+ const int order[]={1,0,2};
+ for(int i=0;i<3;i++){
+  char relative[40];snprintf(relative,sizeof relative,"DATA/%s.%s",names[index],order[i]==0?"tbi":"PCX");source_path_for(path,relative,order[i]);
+  if(GetFileAttributesA(path)!=INVALID_FILE_ATTRIBUTES)return 1;
+ }
+ return 0;
+}
 static int play_ending(int test){
-    if(!test && !play_movie("END",0))return 0;
-    const char *names[]={"END.PCX","CRED1.PCX","CRED2.PCX","CRED3.PCX"};
+    int ub=level_number>=UB_FIRST_LEVEL || campaign_selected==CAMPAIGN_COMBINED;
+    if(!ub && !test && !play_movie("END",0))return 0;
     HDC dc=wglGetCurrentDC();HWND window=WindowFromDC(dc);media_begin();int ok=1;
-    for(int page=0;page<(source_selected==0?2:4) && running && ok;page++){
-        char path[MAX_PATH];asset_path(path,names[page]);unsigned char *rgb=tomb_picture_load(path);if(!rgb){ok=0;break;}
+    for(int page=0;page<(ub?5:source_selected==0?2:4) && running && ok;page++){
+        char path[MAX_PATH];if(!ending_picture_path(path,ub,page)){if(ub && page!=(campaign_selected==CAMPAIGN_COMBINED?4:1))continue;ok=0;break;}
+        unsigned char *rgb=tomb_picture_load(path);if(!rgb){ok=0;break;}
         GLuint texture=0;glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);free(rgb);
-        LARGE_INTEGER frequency,last,now;QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&last);double elapsed=0;int active=-1;MediaAudio silent={0};media_skip=0;
-        while(ok && running && elapsed<15){
-            if(!test && !media_messages(&silent,window,&active))break;
+        LARGE_INTEGER frequency,last,now;QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&last);double elapsed=0,fade_start=-1;float fade_from=1;int active=-1,test_frame=0;uint64_t test_half=0;MediaAudio silent={0};media_skip=0;
+        while(ok && running){
+            if(!test){
+                media_messages(&silent,window,&active);if(!running)break;
+                if(media_skip && fade_start<0){fade_from=credits_brightness(elapsed,-1,1);fade_start=elapsed;}
+                media_skip=0;
+            }
             QueryPerformanceCounter(&now);if(active==1)elapsed+=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart;last=now;
-            light_UseProgram(0);glDisable(GL_DEPTH_TEST);glDisable(GL_ALPHA_TEST);glDisable(GL_SCISSOR_TEST);glViewport(0,0,width,height);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+            if(test){static const double frames[]={0,.5,1,CREDITS_HOLD,CREDITS_HOLD+CREDITS_FADE_OUT/2,CREDITS_HOLD+CREDITS_FADE_OUT};elapsed=frames[test_frame++];}
+            float brightness=credits_brightness(elapsed,fade_start,fade_from);
+            light_UseProgram(0);glDisable(GL_DEPTH_TEST);glDisable(GL_ALPHA_TEST);glDisable(GL_BLEND);glDisable(GL_SCISSOR_TEST);glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_MODULATE);glViewport(0,0,width,height);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
             int vw=width,vh=width*3/4;if(vh>height){vh=height;vw=height*4/3;}glViewport((width-vw)/2,(height-vh)/2,vw,vh);
-            glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,1,1,0,-1,1);glMatrixMode(GL_MODELVIEW);glLoadIdentity();glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,texture);glColor3f(1,1,1);
+            glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,1,1,0,-1,1);glMatrixMode(GL_MODELVIEW);glLoadIdentity();glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,texture);glColor3f(brightness,brightness,brightness);
             glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2f(0,0);glTexCoord2f(640.f/1024,0);glVertex2f(1,0);glTexCoord2f(640.f/1024,480.f/512);glVertex2f(1,1);glTexCoord2f(0,480.f/512);glVertex2f(0,1);glEnd();
-            if(glGetError()!=GL_NO_ERROR)ok=0;if(test)break;vr_media_present();display_present(dc);Sleep(1);
+            if(test){
+                size_t bytes=(size_t)width*height*4;unsigned char *pixels=malloc(bytes);uint64_t total=0;
+                if(!pixels)ok=0;
+                else{glReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels);for(size_t i=0;i<bytes;i+=4)total+=pixels[i]+pixels[i+1]+pixels[i+2];free(pixels);
+                    if(test_frame==1 || test_frame==6){if(total)ok=0;}
+                    else if(test_frame==2){test_half=total;if(!total)ok=0;}
+                    else if(test_frame==3 && total<=test_half)ok=0;
+                }
+            }
+            if(glGetError()!=GL_NO_ERROR)ok=0;
+            if(!test){vr_media_present();display_present(dc);}
+            if(elapsed>=CREDITS_HOLD+CREDITS_FADE_OUT || (fade_start>=0 && elapsed>=fade_start+CREDITS_FADE_OUT))break;
+            if(!test)Sleep(1);
         }
         glDeleteTextures(1,&texture);
     }

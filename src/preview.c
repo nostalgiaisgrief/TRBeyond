@@ -45,9 +45,11 @@ static TombVisual *cinematic_equipment;
 static GLuint *cinematic_equipment_tiles;
 static int cinematic_sidearm,cinematic_shotgun;
 
+static int settings_draw_distance=1; /* Original, maximum with fog, maximum without fog. */
+static const char *draw_distance_names[]={"Original","Max Surfaces With Fog","Max Surfaces No Fog"};
 static double world_far_distance=20480;
 static double world_far_plane(void){
- if(!(play.gameplay_options&TOMB_MAX_DRAW_DISTANCE))return 20480;
+ if(settings_draw_distance==0)return 20480;
  double lo[3]={INFINITY,INFINITY,INFINITY},hi[3]={-INFINITY,-INFINITY,-INFINITY};
  for(size_t j=0;j<level->room_count;j++){
   const TombRoom *r=level->rooms+j;
@@ -61,9 +63,12 @@ static TombObjects objects;
 static int16_t sine_table[1025];
 static TombWaterEffect water_effect;
 static uint32_t effect_ticks;
-static int water_eye,water_room;
-static int room_additive_pass;
+static int water_eye,water_room,water_object;
+static size_t water_draw_room=SIZE_MAX;
+static int room_translucent_pass;
 static double effect_focal;
+static double render_pixel_scale=1.0;
+static int overlay_pass; /* 0: complete overlay, 1: scenery/ring, 2: sharp UI. */
 static int pose_mode=0,caves=0;
 static int cinema_mode,cinema_fov,cinema_roll,media_busy,media_skip,cutscene_seen,media_test,cutscene_only;
 static const char *movie_only;
@@ -113,6 +118,9 @@ static int draw_requested;
 static void render_reset(void);
 static int inventory_key_only,inventory_ring_current[3];
 static int inventory_open,inventory_selected,inventory_stats,inventory_keys,level_number=1;
+static double level_name_time=5.0;
+static double detail_notice_time;
+static char detail_notice[128];
 static int inventory_capture,transition_test,peru_test,folly_test,midas_test;
 static TombRing inventory_ring,ring_previous;
 static int ring_interpolate;
@@ -137,6 +145,13 @@ static uint32_t new_game_options;
 static int home_from_level_select;
 static int save_levels[17],settings_music=10,settings_sound=10,settings_detail=2,settings_vr_deadzone=18;
 static int settings_framerate=0,settings_vsync=1,settings_force43=0;
+/* Visual styles are independent of source IDs; Custom is a preset status. */
+static const char *visual_style_names[]={"PS1","DOS","DOS 3DFX","PS1 Colour with DOS Effect"};
+static const char *preset_names[]={"Optimal","DOS","DOS 3DFX","PS1"};
+static int settings_water_style=3,settings_preset=0;
+static int settings_full_colour=0,settings_texture_filtering=0;
+static int water_ps1_colour(void){return settings_water_style==0 || settings_water_style==3;}
+static int water_tint(int wet){return water_ps1_colour()?(water_eye || wet?2:0):settings_water_style==2?(water_eye || wet?1:0):water_eye;}
 static int front_capture,front_test,autosave_switch_test;
 static int door_render_test,block_render_test,remaining_render_test,jaw_render_test,jaw_diagnostic;
 static FILE *jaw_log;
@@ -150,6 +165,7 @@ static unsigned bindings[13]={VK_UP,VK_DOWN,VK_LEFT,VK_RIGHT,VK_DELETE,VK_NEXT,V
 static const char *binding_names[13]={"Run","Back","Left","Right","Step Left","Step Right","Walk","Jump","Action","Draw Weapon","Roll","Look","Inventory"};
 static int binding_wait;
 static void mouse_release(void);
+static void mouse_inventory_begin(void);
 static void inventory_begin(void);
 static int crystal_pending=-1,crystal_held,crystal_render;
 static int passport_shortcut,passport_save;
@@ -159,6 +175,7 @@ static unsigned char *cinematic_pixels,cinematic_palette[768],cinematic_light[25
 static int cinematic_width,cinematic_height;
 static void frontend_title(void);
 static void ui_text(int,int,const char *,unsigned);
+static double ui_scale(void);
 static int load_game_level(int,int,const char *);
 #include "preview_sources.h"
 static void asset_path(char *path,const char *file){
@@ -167,9 +184,19 @@ static void asset_path(char *path,const char *file){
  if(source_selected==0 && n>4 && !_stricmp(relative+n-4,".PCX"))memcpy(relative+n-4,".tbi",5);
  source_path(path,relative);
 }
+static void game_level_path(char *path,int number){
+ if(number>=UB_FIRST_LEVEL){char relative[80];snprintf(relative,sizeof relative,"DATA/%s",level_choices[number].file);ub_path(path,relative);}
+ else asset_path(path,level_choices[number].file);
+}
 static void save_path(char *path,int slot){
  char base[MAX_PATH],folder[MAX_PATH];
  if(front_test)snprintf(folder,sizeof folder,"%s/build/test-saves",install_root);
+ else if(campaign_selected==CAMPAIGN_COMBINED){
+  if(source_legacy && source_selected==1)snprintf(base,sizeof base,"%s/saves",install_root);
+  else{char root[MAX_PATH];source_base(root,source_selected);snprintf(base,sizeof base,"%s/SAVES",root);}
+  CreateDirectoryA(base,NULL);snprintf(folder,sizeof folder,"%s/Combined",base);
+ }
+ else if(campaign_selected==CAMPAIGN_UB)ub_path(folder,"SAVES");
  else if(source_legacy && source_selected==1)snprintf(folder,sizeof folder,"%s/saves",install_root);
  else {source_base(base,source_selected);snprintf(folder,sizeof folder,"%s/SAVES",base);}
  CreateDirectoryA(folder,NULL);
@@ -238,14 +265,14 @@ static void speech_free(void){
  speech_level_number=speech_source=-1;
 }
 static TombSoundBank *speech_samples(void){
- if(music_selected==source_selected)return &sound_bank;
- if(speech_level_number!=level_number || speech_source!=music_selected){
-  speech_free();speech_level_number=level_number;speech_source=music_selected;
+ if(level_number>=UB_FIRST_LEVEL || music_source()==source_selected)return &sound_bank;
+ if(speech_level_number!=level_number || speech_source!=music_source()){
+  speech_free();speech_level_number=level_number;speech_source=music_source();
   char path[MAX_PATH],relative[80],error[128];
   snprintf(relative,sizeof relative,"DATA/%s",level_choices[level_number].file);
   size_t n=strlen(relative);
-  if(!(source_legacy && music_selected==1) && n>4)memcpy(relative+n-4,".TBL",5);
-  source_path_for(path,relative,music_selected);
+  if(!(source_legacy && music_source()==1) && n>4)memcpy(relative+n-4,".TBL",5);
+  source_path_for(path,relative,music_source());
   speech_level=tomb_level_load(path,error,sizeof error);
   if(speech_level && tomb_sound_bank_load(&speech_bank,speech_level)){
    speech_bank.source_count=0; /* Never duplicate the other edition's ambient effects. */
@@ -270,7 +297,7 @@ static void sound_tick(void) {
     else if(play.shooter.mode==TOMB_MODE_VR){memcpy(origin,listener,sizeof origin);yaw=vr_sound_yaw();}
     TombSoundEvent effects[TOMB_SOUND_EVENTS],secrets[TOMB_SOUND_EVENTS];size_t ne=0,ns=0;
     for(size_t i=0;i<play.sound_count;i++){
-      if(music_selected!=0 && music_selected!=source_selected && play.sounds[i].kind==5 && play.sounds[i].id==173)secrets[ns++]=play.sounds[i];
+      if(music_source()!=0 && music_selected!=source_selected && play.sounds[i].kind==5 && play.sounds[i].id==173)secrets[ns++]=play.sounds[i];
       else effects[ne++]=play.sounds[i];
     }
     if(ns)speech_samples();
@@ -287,17 +314,20 @@ static unsigned char *music_data;
 static unsigned playing_music_serial;
 static TombPS1Music ps1_music;
 static int requested_music_track;
+static int combined_background;
+static double combined_background_gain;
 static void audio_close_stream(void) {
     tomb_sound_output_close(music_output);music_output=NULL;free(music_data);music_data=NULL;audio_error[0]=0;
 }
 static void audio_stop(void) {
     audio_close_stream();speech_free();playing_track=0;playing_music_serial=0;requested_music_track=0;
-    ps1_music=(TombPS1Music){0};audio_paused=0;
+    ps1_music=(TombPS1Music){0};audio_paused=0;combined_background=0;combined_background_gain=0;
 }
 static void audio_start_track(int track,int gain) {
     audio_close_stream();playing_track=track;
+    int source_selection=combined_background?1:music_source();
         if(track) {
-            int source=music_selected==0?(track>=2 && track<=57?track:0):tomb_music_source(track),ready=0;
+            int source=source_selection==0?(track>=2 && track<=57?track:0):tomb_music_source(track),ready=0;
             /* DOS 38cf7 requests sound ID track+148 from the current level. */
             if(source==-3){
                 TombSoundBank *bank=speech_samples();
@@ -308,14 +338,14 @@ static void audio_start_track(int track,int gain) {
                 }
             }else{
                 char file[MAX_PATH],relative[80];
-                snprintf(relative,sizeof relative,"AUDIO/%s%02d.wav",source>0?"cd":"track",source>0?source:track);source_path_for(file,relative,music_selected);
+                snprintf(relative,sizeof relative,"AUDIO/%s%02d.wav",source>0?"cd":"track",source>0?source:track);source_path_for(file,relative,source_selection);
                 FILE *f=fopen(file,"rb");long bytes=0;
                 if(f){if(!fseek(f,0,SEEK_END))bytes=ftell(f);rewind(f);if(bytes>0 && bytes<100000000)music_data=malloc((size_t)bytes);if(music_data && fread(music_data,1,(size_t)bytes,f)!=(size_t)bytes){free(music_data);music_data=NULL;}fclose(f);}
                 ready=music_data && tomb_sound_sample(&music_sample,music_data,(size_t)bytes);
             }
             if(ready){
                 memset(&music_bank,0,sizeof music_bank);music_bank.samples=&music_sample;music_bank.sample_count=1;tomb_sound_init(&music_mixer,&music_bank);
-                music_mixer.voices[0]=(TombSoundVoice){.active=1,.volume=32767,.pitch=100,.mode=music_selected==0?(title_mode?2:0):(source>0?2:0)};music_output=tomb_sound_output_open_gain(&music_mixer,gain);
+                music_mixer.voices[0]=(TombSoundVoice){.active=1,.volume=32767,.pitch=100,.mode=source_selection==0?(title_mode?2:0):(source>0?2:0)};music_output=tomb_sound_output_open_gain(&music_mixer,gain);
             }
             if(!music_output)snprintf(audio_error,sizeof audio_error,"Music track %d unavailable",track);
         }
@@ -323,7 +353,27 @@ static void audio_start_track(int track,int gain) {
 static void audio_update(int suspended,double dt) {
     int track=title_mode?2:caves?objects.progress->music.current_track:play.gym.current_track;
     unsigned serial=title_mode?0:caves?objects.progress->music.audio_serial:play.gym.audio_serial;
-    if(music_selected==0){
+    if(music_selected==3 && !title_mode){
+        if(track<2 || track>57)track=0;
+        int changed=track!=requested_music_track || serial!=playing_music_serial;
+        if(changed){
+            requested_music_track=track;playing_music_serial=serial;
+            combined_background=0;combined_background_gain=0;
+            /* A trigger starts immediately: no PS1 fade-out wait. */
+            audio_start_track(track,32767);
+        }
+        int finished=!music_output || (!combined_background && music_sample.rate &&
+            (uint64_t)tomb_sound_output_stats(music_output).played_samples*music_sample.rate >=
+            (uint64_t)music_sample.frames*TOMB_SOUND_RATE);
+        if(finished && !combined_background){
+            combined_background=1;combined_background_gain=0;
+            audio_start_track(tomb_music_level_track(level_number),0);
+        }
+        if(combined_background){
+            if(!suspended)combined_background_gain=fmin(1.0,combined_background_gain+dt);
+            tomb_sound_output_gain(music_output,(int)(32767*combined_background_gain));
+        }
+    }else if(music_source()==0){
         if(track<2 || track>57)track=0;
         /* Use the device playback position, not the mixer position (which is
            several buffers ahead), to recognize a completed one-shot. */
@@ -407,6 +457,7 @@ static void update_camera(double dt) {
             if(!tomb_object_supported(object) && tomb_visual_model(visual,object,&m) && m.animation<level->animation_count){focus.animation=(int16_t)m.animation;focus.frame=level->animations[m.animation].first_frame;}
         }
     }
+    if(!camera.ready && (play.gameplay_options&TOMB_SKIP_STATS))r.flags|=TOMB_CAMERA_SNAP;
     if(!tomb_camera_tick_effects(&camera,level,visual,&focus,object,sine_table,&r,&camera_bounce,&objects.enemies->random))play.status="DOS camera query failed";
     if(objects.enemies)for(int i=0;i<3;i++)objects.enemies->camera[i]=(int32_t)camera.eye[i];
     objects.peru->camera_target_y=(int32_t)camera.target[1];
@@ -521,11 +572,12 @@ static void mesh(const TombMeshView *m) {
     int32_t rotation[9],local[3];
     for(int i=0;i<3;i++)for(int j=0;j<3;j++)rotation[i*3+j]=(int32_t)lround(matrix[j*4+i]*16384);
     tomb_light_vector(&model_light,rotation,local);
-    light_UseProgram(shade_program);light_ActiveTexture(0x84c1);glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count*2]);light_ActiveTexture(0x84c0);
-    int room_far=m->vertex_stride==8 && !(play.gameplay_options&TOMB_MAX_DRAW_DISTANCE);
+    light_UseProgram(shade_program);lighting_options(0);light_ActiveTexture(0x84c1);glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count*2]);light_ActiveTexture(0x84c0);
+    int room_far=m->vertex_stride==8 && settings_draw_distance==0;
+    int room_fog=m->vertex_stride==8 && settings_draw_distance!=2;
     light_Uniform1i(shade_room_far,room_far);
-    int warp=m->vertex_stride==8 && (water_eye!=water_room);
-    light_Uniform1i(shade_water,water_eye);light_Uniform1i(shade_warp,warp);
+    int warp=settings_water_style!=0 && m->vertex_stride==8 && (water_eye!=water_room);
+    light_Uniform1i(shade_water,water_tint(m->vertex_stride==8?water_room:water_object));light_Uniform1i(shade_warp,warp);
     for(int group=0;group<4;group++) {
         int n=(group%2)?3:4;
         for(size_t f=0;f<m->face_count[group];f++) {
@@ -545,15 +597,23 @@ static void mesh(const TombMeshView *m) {
             if(group<2) {
                 texture=visual->textures+20*tomb_visual_texture(visual,material&32767,effect_ticks);
                 glEnable(GL_TEXTURE_2D);
-                glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count+(u16(texture+2)&32767)]);
+                glBindTexture(GL_TEXTURE_2D,tiles[(lighting_rgba()?0:visual->tile_count)+(u16(texture+2)&32767)]);
+                lighting_filter();
+                if(settings_texture_filtering){
+                    unsigned lo[2]={65535,65535},hi[2]={0,0};
+                    for(int j=0;j<n;j++)for(int c=0;c<2;c++){unsigned v=u16(texture+4+j*4+c*2)>>8;if(v<lo[c])lo[c]=v;if(v>hi[c])hi[c]=v;}
+                    light_Uniform4f(shade_bounds,(lo[0]+.5f)/256,(lo[1]+.5f)/256,(hi[0]+.5f)/256,(hi[1]+.5f)/256);
+                }
                 if(u16(texture)==1) glEnable(GL_ALPHA_TEST); else glDisable(GL_ALPHA_TEST);
             } else { glDisable(GL_TEXTURE_2D); glDisable(GL_ALPHA_TEST); }
-            int additive=visual->rgba_tiles && texture && u16(texture)==2;
-            /* PS1 water is additive. Draw it after opaque rooms and actors;
-               otherwise later rooms overwrite its colour (no depth write). */
-            if(visual->rgba_tiles && m->vertex_stride==8 && additive!=room_additive_pass)continue;
-            light_Uniform1i(shade_material,crystal_render?-6:texture?(visual->rgba_tiles?-4:-1):(int)(material&255));
-            if(additive){glEnable(GL_BLEND);glBlendFunc(GL_ONE,GL_ONE);glDepthMask(GL_FALSE);}
+            int water_surface=texture && water_draw_room!=SIZE_MAX && m->vertex_stride==8 && tomb_visual_water_face(visual,water_draw_room,face,n);
+            int translucent=texture && (water_surface?water_ps1_colour():visual->rgba_tiles && u16(texture)==2);
+            /* PS1 ABR 0: half foreground plus half background, after opaque geometry. */
+            if(m->vertex_stride==8 && translucent!=room_translucent_pass)continue;
+            light_Uniform1i(shade_surface,translucent);
+            if(water_surface && !translucent)glEnable(GL_ALPHA_TEST);
+            light_Uniform1i(shade_material,crystal_render?-6:texture?(lighting_rgba()?-4:-1):(int)(material&255));
+            if(translucent){glDisable(GL_ALPHA_TEST);glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);}
             glBegin(n==4?GL_QUADS:GL_TRIANGLES);
             for(int j=0;j<n;j++) {
                 unsigned index=u16(face+2*j);
@@ -561,18 +621,23 @@ static void mesh(const TombMeshView *m) {
                 int shade=tomb_light_vertex(m,index,&model_light,local);
                 if(m->vertex_stride==8){
                     int depth=(int)floor(-(matrix[2]*s16(p)+matrix[6]*s16(p+2)+matrix[10]*s16(p+4)+matrix[14]));
-                    shade=room_far?tomb_light_room_depth(s16(p+6),depth):s16(p+6);
+                    shade=room_fog?tomb_light_room_depth(s16(p+6),depth):s16(p+6);
                     if(water_room)shade=tomb_water_effect_shade(&water_effect,m->vertex_count-index,effect_ticks,shade);
                 }
                 float dx=0,dy=0;
                 if(warp){
-                    double vx=matrix[0]*s16(p)+matrix[4]*s16(p+2)+matrix[8]*s16(p+4)+matrix[12];
-                    double vy=matrix[1]*s16(p)+matrix[5]*s16(p+2)+matrix[9]*s16(p+4)+matrix[13];
                     double depth=-(matrix[2]*s16(p)+matrix[6]*s16(p+2)+matrix[10]*s16(p+4)+matrix[14]);
                     if(depth>=10){
                         double scale=height/480.0;int ox,oy;
-                        tomb_water_effect_offset(&water_effect,effect_ticks,320+(int)(vx*effect_focal/depth/scale),240-(int)(vy*effect_focal/depth/scale),&ox,&oy);
-                        dx=(float)(ox*scale/width);dy=(float)(-oy*scale/height);
+                        /* Keep wave phase attached to the world, not projected
+                           pixels: camera motion must not advance the wave.
+                           Shared vertices across room boundaries use the same phase. */
+                        const TombRoom *room=level->rooms+water_draw_room;
+                        int wx=room->x+s16(p),wy=s16(p+2),wz=room->z+s16(p+4);
+                        tomb_water_effect_offset(&water_effect,effect_ticks,
+                            tomb_asr(wx,7)+tomb_asr(wz,8),
+                            tomb_asr(wy,7)+tomb_asr(wz,7),&ox,&oy);
+                        dx=(float)(ox*scale*render_pixel_scale/width);dy=(float)(-oy*scale/height);
                     }
                 }
                 glColor3f((float)(shade<0?0:shade>8191?8191:shade)/8192.f,.5f+dx,.5f+dy);
@@ -583,10 +648,10 @@ static void mesh(const TombMeshView *m) {
                 glVertex3f((float)s16(p),(float)s16(p+2),(float)s16(p+4));
             }
             glEnd();
-            if(additive){glDisable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_TRUE);}
+            if(translucent){glDisable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_TRUE);}
         }
     }
-    light_Uniform1i(shade_room_far,0);glDisable(GL_CULL_FACE);light_UseProgram(0);if(interpolated)glPopMatrix();
+    light_Uniform1i(shade_surface,0);light_Uniform1i(shade_room_far,0);glDisable(GL_CULL_FACE);light_UseProgram(0);if(interpolated)glPopMatrix();
 }
 static void rotate_pose(const TombPose *a,const TombPose *b,int joint,float t) {
     GLfloat rotation[16];
@@ -799,13 +864,16 @@ static void draw_billboard(int sprite,const float position[16],int intensity,int
     if(play.shooter.mode==TOMB_MODE_VR && xr.render_eye>=0 && !cinema_mode){
         double m[16];vr_upright_sprite_matrix(position,m);glMultMatrixd(m);
     }else{glLoadIdentity();glTranslatef((float)v[0],(float)v[1],(float)v[2]);}
-    glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count+u16(p)]);glColor3f(1,1,1);
-    int shade=tomb_sprite_shade((int16_t)intensity,play.gameplay_options&TOMB_MAX_DRAW_DISTANCE?0:(int)-v[2]);if(shade<0){glPopMatrix();return;}
+    glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glBindTexture(GL_TEXTURE_2D,tiles[(lighting_rgba()?0:visual->tile_count)+u16(p)]);lighting_filter();glColor3f(1,1,1);
+    int depth=settings_draw_distance==2?0:(int)-v[2];
+    int shade=settings_draw_distance==1?fmin(8191,fmax(0,intensity+fmax(0,depth-12288))):tomb_sprite_shade((int16_t)intensity,depth);
+    if(shade<0){glPopMatrix();return;}
     /* Keep the image on the original billboard, but fold its depth proxy onto
        a supporting plane. The proxy is evaluated along each viewing ray, so
        image size/UVs stay unchanged and solid foreground objects still occlude. */
     int pickup=pickup_room>=0;
     light_UseProgram(pickup?pickup_program:shade_program);
+    light_Uniform4f(pickup?pickup_bounds:shade_bounds,u+.5f/256,t+.5f/256,u+du-.5f/256,t+dv-.5f/256);
     if(pickup){
         double normal[3]={0,1,0};TombSectorRef ref;TombHeights h;
         if(tomb_find_sector(level,(int)position[12],(int)position[13],(int)position[14],pickup_room,&ref) &&
@@ -820,10 +888,11 @@ static void draw_billboard(int sprite,const float position[16],int intensity,int
         double n[3];for(int j=0;j<3;j++)n[j]=view[j]*normal[0]+view[4+j]*normal[1]+view[8+j]*normal[2];
         light_Uniform4f(pickup_plane,(float)n[0],(float)n[1],(float)n[2],(float)(n[0]*v[0]+n[1]*v[1]+n[2]*v[2]-8));
     }
-    light_ActiveTexture(0x84c1);glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count*2]);light_ActiveTexture(0x84c0);glColor3f(shade/8192.f,0,0);light_Uniform1i(pickup?pickup_material:shade_material,visual->rgba_tiles?-4:-1);light_Uniform1i(pickup?pickup_water:shade_water,water_eye);if(!pickup)light_Uniform1i(shade_warp,0);
+    light_ActiveTexture(0x84c1);glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count*2]);light_ActiveTexture(0x84c0);glColor3f(shade/8192.f,0,0);lighting_options(pickup);light_Uniform1i(pickup?pickup_material:shade_material,lighting_rgba()?-4:-1);light_Uniform1i(pickup?pickup_water:shade_water,water_tint(water_object));if(!pickup)light_Uniform1i(shade_warp,0);
     glBegin(GL_QUADS);glTexCoord2f(u,t);glVertex3f(left,top,0);glTexCoord2f(u+du,t);glVertex3f(right,top,0);glTexCoord2f(u+du,t+dv);glVertex3f(right,bottom,0);glTexCoord2f(u,t+dv);glVertex3f(left,bottom,0);glEnd();light_UseProgram(0);glPopMatrix();
 }
 static int draw_object(const TombObject *o) {
+    water_object=(level->rooms[o->actor.room].flags&1)!=0;
     if(o->object==6)return draw_lara_actor(o);
     if(o->object==168){
         const TombActor *a=&o->actor;if(a->animation<0 || (size_t)a->animation>=visual->mesh_count)return 0;
@@ -941,6 +1010,7 @@ static int draw_pickup_model(const TombObject *o,int16_t visual_yaw){
     glPopMatrix();return 1;
 }
 static void draw_hazard_effect(const TombHazardEffect *e,size_t track,int intensity) {
+    water_object=e->room>=0 && (size_t)e->room<level->room_count && (level->rooms[e->room].flags&1);
     if(e->id==172 || e->id==173){
         TombModel m;if(!tomb_visual_model(visual,e->id,&m))return;
         float position[16]={0};position[12]=(float)e->x;position[13]=(float)e->y;position[14]=(float)e->z;
@@ -967,9 +1037,9 @@ static void draw_hazard_effect(const TombHazardEffect *e,size_t track,int intens
 static int make_tiles(void) {
     shadow_palette=NULL;
     if(!lighting_program()){MessageBoxA(NULL,"Lighting requires OpenGL 2.0 support. Check the graphics driver. See stderr for shader diagnostics.","Renderer initialization",MB_ICONERROR);return 0;}
-    tiles=calloc(visual->tile_count*2+1,sizeof *tiles); unsigned char *rgba=malloc(65536*4);
+    tiles=calloc(visual->tile_count*2+2,sizeof *tiles); unsigned char *rgba=malloc(65536*4);
     if(!tiles || !rgba){free(tiles);free(rgba);tiles=NULL;return 0;}
-    glGenTextures((GLsizei)(visual->tile_count*2+1),tiles);
+    glGenTextures((GLsizei)(visual->tile_count*2+2),tiles);
     lighting_textures();
     for(size_t i=0;i<visual->tile_count;i++) {
         for(size_t j=0;j<65536;j++) {
@@ -1005,9 +1075,9 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     xr.reset=1;
     free(cinematic_pixels);cinematic_pixels=NULL;
     if(next_number<0 || next_number>=LEVEL_CHOICE_COUNT)return 0;
-    char path[MAX_PATH],error[256]={0};asset_path(path,level_choices[next_number].file);
+    char path[MAX_PATH],error[256]={0};game_level_path(path,next_number);
     TombLevel *next=tomb_level_load(path,error,sizeof error);TombVisual *view=NULL;
-    if(next)next->music_edition=music_selected==0?2:1;
+    if(next)next->music_edition=music_source()==0?2:1;
     TombObjects world={0};TombPlaytest player;TombLaraStart spawn;TombScreenRect *rects=NULL;
     if(!next || !(view=tomb_visual_load(next,error,sizeof error)) || !tomb_lara_start(next,&spawn) ||
        !(rects=calloc(next->room_count,sizeof *rects)) || !tomb_objects_init(&world,next,view) ||
@@ -1028,7 +1098,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     if(next_number==13 && carry && !saved)tomb_inventory_confiscate(&carried);
     audio_stop();tomb_sound_output_close(ring_sound_output);ring_sound_output=NULL;tomb_sound_output_close(sound_output);sound_output=NULL;tomb_sound_bank_free(&sound_bank);
     glDeleteTextures((GLsizei)visual->tile_count,font_tiles);free(font_tiles);
-    glDeleteTextures((GLsizei)(visual->tile_count*2+1),tiles);free(tiles);free(room_rects);
+    glDeleteTextures((GLsizei)(visual->tile_count*2+2),tiles);free(tiles);free(room_rects);
     tomb_objects_free(&objects);tomb_visual_free(visual);tomb_level_free(level);
     level=next;visual=view;objects=world;play=player;start=spawn;room_rects=rects;
     /* init installs callbacks pointing at the player itself, so rebuild after moving. */
@@ -1043,8 +1113,8 @@ static int load_game_level(int next_number,int carry,const char *saved) {
            restored speech as already handled without restarting its sample;
            retain current_track and one-shot masks to avoid retriggering it. */
         int restored_track=next_number?objects.progress->music.current_track:play.gym.current_track;
-        if(music_selected==0 || tomb_music_source(restored_track)==-3)playing_track=restored_track;
-        if(music_selected==0){requested_music_track=restored_track;playing_music_serial=next_number?objects.progress->music.audio_serial:play.gym.audio_serial;}
+        if(music_source()==0 || tomb_music_source(restored_track)==-3)playing_track=restored_track;
+        if(music_source()==0){requested_music_track=restored_track;playing_music_serial=next_number?objects.progress->music.audio_serial:play.gym.audio_serial;}
     }else{play.inventory=carried;level_inventory=carried;play.gameplay_options=carried_options;tomb_enemies_configure(&objects,(carried_options&TOMB_NO_ENEMIES)!=0);tomb_shooter_start(&play,carried_mode);
         if(carried_options&TOMB_CONSISTENT_WEAPONS){
             int slot=carried_weapon==4?1:carried_weapon==2?2:carried_weapon==3?3:0;
@@ -1055,14 +1125,16 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     }
     tomb_pickups_replace_owned(&objects,&play.inventory);
     home_from_level_select=0;cutscene_seen=0;water_particles_reset();
-    level_number=next_number;caves=next_number!=0;play.movement_only=caves;play.objects=caves?&objects:NULL;
+    detail_notice_time=0;
+    level_name_time=saved?0:5.0;
+    level_number=next_number;if(campaign_selected!=CAMPAIGN_COMBINED)campaign_selected=next_number>=UB_FIRST_LEVEL;caves=next_number!=0;play.movement_only=caves;play.objects=caves?&objects:NULL;
     /* Every load must rebase tracking to the new spawn/save. New Game used to
        do this alone, leaving completion transitions in the previous world. */
     tomb_vr_reset(&vr,&play);xr.panel_open=0;
     title_mode=death_menu=slot_menu=options_ring=new_game_menu=0;
     inventory_open=inventory_stats=inventory_selected=draw_requested=paused=0;
     render_reset();
-    if(!saved){camera.ready=0;render_reset();objects.progress->music.current_track=music_selected==0?0:tomb_music_level_track(next_number);}
+    if(!saved){camera.ready=0;render_reset();objects.progress->music.current_track=music_source()==0?0:tomb_music_level_track(next_number);}
     camera_bounce=0;pose_mode=0;orbit=0;distance=1536;camera_hold=elapsed=accumulator=0;
     if(!make_tiles()){running=0;return 0;}
     sound_failed=0;if(tomb_sound_bank_load(&sound_bank,level)){tomb_sound_init(&sound_mixer,&sound_bank);sound_output=tomb_sound_output_open(&sound_mixer);
@@ -1073,7 +1145,19 @@ static int load_game_level(int next_number,int carry,const char *saved) {
         if(movie)play_movie(movie,0);
     }autosave_reset(!saved);return 1;
 }
-static int load_next_level(void){if(level_number==13 && !front_test && !transition_test)play_cutscene_sequence(0,3);if(level_number==15 && !front_test && !transition_test)play_ending(0);if(level_number<1 || level_number+1>=LEVEL_CHOICE_COUNT){frontend_title();return 1;}return load_game_level(level_number+1,1,NULL);
+static int load_next_level(void){
+ if(campaign_selected==CAMPAIGN_COMBINED && level_number>0){
+  if(level_number==15)return load_game_level(18,1,NULL);
+  if(level_number==19){if(!front_test && !transition_test)play_movie("END",0);return load_game_level(16,1,NULL);}
+  if(level_number==17){if(!front_test && !transition_test)play_ending(0);frontend_title();return 1;}
+  if(level_number>=UB_FIRST_LEVEL)return load_game_level(level_number+1,1,NULL);
+ }
+ if(level_number>=UB_FIRST_LEVEL){
+  if(level_number<UB_LAST_LEVEL)return load_game_level(level_number+1,1,NULL);
+  if(!front_test && !transition_test)play_ending(0);
+  frontend_title();return 1;
+ }
+ if(level_number==13 && !front_test && !transition_test)play_cutscene_sequence(0,3);if(level_number==15 && !front_test && !transition_test)play_ending(0);if(level_number<1 || level_number+1>=UB_FIRST_LEVEL){frontend_title();return 1;}return load_game_level(level_number+1,1,NULL);
 }
 /* Menu effects have their own output so pausing world audio cannot mute them.
    DOS passes a null position and environment 2 for these SoundEffect calls. */
@@ -1086,7 +1170,7 @@ static void inventory_sound(void) {
 static void inventory_begin(void) {
     crystal_pending=-1;
     vr.menu_open=play.shooter.mode==TOMB_MODE_VR && !title_mode && !death_menu;
-    mouse_release();
+    mouse_inventory_begin();
     backdrop_dirty=1;backdrop_shade=32;refresh_slots();
     options_ring=slot_menu=menu_action=binding_wait=new_game_menu=passport_shortcut=passport_save=0;menu_error[0]=0;
     inventory_keys=inventory_key_only=play.quest_request;inventory_ring_current[0]=inventory_ring_current[1]=inventory_ring_current[2]=0;play.quest_request=0;play.inventory.chosen=-1;
@@ -1121,7 +1205,7 @@ static void font_glyph(void *user,const TombTextGlyph *g) {
     glTexCoord2f(u+du,v+dv);glVertex2f(x1,y1);glTexCoord2f(u,v+dv);glVertex2f(x0,y1);glEnd();
 }
 static void text_aligned(float x,float y,const char *text,unsigned flags) {
-    double scale=fmin(width/640.0,height/480.0);if(scale<.5)scale=.5;
+    double scale=ui_scale();
     TombTextStyle style={(int)x,(int)y,(int32_t)(scale*65536),(int32_t)(scale*65536),1,6,(uint16_t)flags};
     glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glColor3f(1,1,1);
     tomb_text_layout(text,&style,width,height,font_glyph,NULL);
@@ -1214,8 +1298,40 @@ static void draw_inventory_ring(void) {
     glPopMatrix();glMatrixMode(GL_PROJECTION);glPopMatrix();glMatrixMode(GL_MODELVIEW);glDisable(GL_DEPTH_TEST);glDisable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);
     visual=saved_visual;tiles=saved_tiles;
 }
-static double ui_scale(void){return fmax(.5,fmin(width/640.0,height/480.0));}
+static double ui_scale(void){
+    double base=fmax(.5,fmin(width/640.0,height/480.0));
+    double scale=base*(settings_detail==0?2.4:settings_detail==3?2.0:1.0);
+    /* Large HUD and labels, but keep complete dialogs inside the display. */
+    if(inventory_open || (objects.progress && objects.progress->complete)){
+        int object=inventory_ring.count?inventory_ring.items[inventory_ring.current].object:0;
+        double panel_width=object==97?640:520;
+        scale=fmin(scale,fmin(width/panel_width,height/420.0));
+    }
+    return scale;
+}
 static void ui_text(int x,int y,const char *text,unsigned flags){double scale=ui_scale();text_aligned((float)(x*scale),(float)(y*scale),text,flags);}
+typedef struct HudTextBounds { int top,right,valid; } HudTextBounds;
+static void hud_text_bounds(void *user,const TombTextGlyph *g){
+    HudTextBounds *b=user;int sprite=tomb_hazard_sprite(visual,190,g->glyph,NULL);if(sprite<0)return;
+    const unsigned char *p=visual->sprite_textures+16*sprite;
+    int top=g->y+(int)((int64_t)s16(p+10)*g->scale_y>>16);
+    int right=g->x+(int)((int64_t)s16(p+12)*g->scale_x>>16);
+    if(!b->valid || top<b->top)b->top=top;
+    if(!b->valid || right>b->right)b->right=right;
+    b->valid=1;
+}
+static void hud_ammo_text(const char *text){
+    double scale=ui_scale();
+    TombTextStyle style={0,0,(int32_t)(scale*65536),(int32_t)(scale*65536),1,6,0};
+    HudTextBounds bounds={0};tomb_text_layout(text,&style,width,height,hud_text_bounds,&bounds);
+    if(!bounds.valid)return;
+    /* Match the health bar's six-unit outer margin, including sprite offsets.
+       Text advance widths and baselines do not bound the ammo icon artwork. */
+    int margin=(int)(6*scale);style.x=width-margin-bounds.right;style.y=margin-bounds.top;
+    glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glColor3f(1,1,1);
+    tomb_text_layout(text,&style,width,height,font_glyph,NULL);
+    glDisable(GL_ALPHA_TEST);glDisable(GL_TEXTURE_2D);
+}
 static void bar_line(void *user,int x1,int y1,int x2,int y2,int palette) {
     (void)user;double scale=ui_scale();colour((unsigned)palette,1);
     glBegin(GL_QUADS);glVertex2d(x1*scale,y1*scale);glVertex2d((x2+1)*scale,y1*scale);
@@ -1244,16 +1360,16 @@ static void overlay(void) {
     glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
     int medipack=0;
     if(inventory_open || complete) {
-        if(!title_mode && !vr_hand_ring())frontend_inventory_backdrop();
-        if(title_mode)frontend_backdrop();
+        if(overlay_pass!=2 && !title_mode && !vr_hand_ring())frontend_inventory_backdrop();
+        if(overlay_pass!=2 && title_mode)frontend_backdrop();
         if(complete) {
             char lines[4][80];tomb_statistics(play.inventory.ticks,play.pistols.kills,play.inventory.pickups,objects.progress->secrets,tomb_level_secret_total(level_number),lines);
-            ui_text(0,-50,level_choices[level_number].name,TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
-            for(int i=0;i<4;i++)ui_text(0,-20+30*i,lines[i],TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
+            if(overlay_pass!=1){ui_text(0,-50,level_choices[level_number].name,TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
+            for(int i=0;i<4;i++)ui_text(0,-20+30*i,lines[i],TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);}
         } else {
-            if(!new_game_menu)draw_inventory_ring();
-            if(inventory_ring.motion.status!=0 && inventory_ring.motion.status!=13)ui_text(0,26,title_mode?"":options_ring?"OPTIONS":inventory_keys?"ITEMS":"INVENTORY",TOMB_TEXT_CENTRE);
-            if(!inventory_ring.rotating && inventory_ring.motion.status!=0 && inventory_ring.motion.status!=13) {
+            if(overlay_pass!=2 && !new_game_menu)draw_inventory_ring();
+            if(overlay_pass!=1 && inventory_ring.motion.status!=0 && inventory_ring.motion.status!=13)ui_text(0,26,title_mode?"":options_ring?"OPTIONS":inventory_keys?"ITEMS":"INVENTORY",TOMB_TEXT_CENTRE);
+            if(overlay_pass!=1 && !inventory_ring.rotating && inventory_ring.motion.status!=0 && inventory_ring.motion.status!=13) {
                 int id=inventory_ring.items[inventory_selected].object;char amount[64];
                 if(id!=71)ui_text(0,-16,frontend_name(id),TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
                 if(tomb_inventory_label(&play.inventory,id,amount))ui_text(64,-56,amount,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
@@ -1261,18 +1377,31 @@ static void overlay(void) {
             }
         }
     }
-    if(inventory_open)frontend_overlay();
-    if(!title_mode && !complete && (!inventory_open || medipack)) {
+    if(overlay_pass!=1 && inventory_open)frontend_overlay();
+    if(overlay_pass!=1 && !title_mode && !complete && (!inventory_open || medipack)) {
         glDisable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);
         tomb_hud_bar(tomb_hud_health(&play.hud,play.lara.health,play.pistols.status,medipack),0,(int)(width/ui_scale()),bar_line,NULL);
         if(!inventory_open) {
             tomb_hud_bar(tomb_hud_air(play.lara.air,play.lara.water_status),1,(int)(width/ui_scale()),bar_line,NULL);
             /* Shotgun ammunition is stored per pellet; the HUD shows shells. */
-            if((play.weapon_type>=2 && play.weapon_type<=4) && play.pistols.status==4){char amount[64];int slot=play.weapon_type==4?1:play.weapon_type;tomb_ui_ammo(play.inventory.ammo[slot],slot,amount);ui_text(-24,48,amount,TOMB_TEXT_RIGHT);}
+            if((play.weapon_type>=2 && play.weapon_type<=4) && play.pistols.status==4){char amount[64];int slot=play.weapon_type==4?1:play.weapon_type;tomb_ui_ammo(play.inventory.ammo[slot],slot,amount);hud_ammo_text(amount);}
             for(int i=0;i<3;i++)if(play.hud.pickup_time[i]>0)pickup_icon(play.hud.pickup_id[i],i);
         }
     }
-    if(play.shooter.mode && play.pistols.drawn && play.lara.health>0 && !inventory_open && !title_mode && !complete){
+    if(overlay_pass!=1 && !title_mode && !cinema_mode && !complete && !inventory_open &&
+       level_name_time>0 && detail_notice_time<=0 && (play.gameplay_options&TOMB_SHOW_LEVEL_NAME))
+        ui_text(0,-24,level_choices[level_number].name,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
+    if(overlay_pass!=1 && !title_mode && !cinema_mode && detail_notice_time>0){
+        double scale=ui_scale();
+        TombTextStyle style={0,0,65536,65536,1,6,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM};
+        int text_width=tomb_text_width(detail_notice,&style);
+        if(text_width>0)scale=fmin(scale,width*.9/text_width);
+        style.scale_x=style.scale_y=(int32_t)(scale*65536);style.y=-(int)(24*ui_scale());
+        glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glColor3f(1,1,1);
+        tomb_text_layout(detail_notice,&style,width,height,font_glyph,NULL);
+        glDisable(GL_ALPHA_TEST);glDisable(GL_TEXTURE_2D);
+    }
+    if(overlay_pass!=1 && play.shooter.mode && play.pistols.drawn && play.lara.health>0 && !inventory_open && !title_mode && !complete){
         float x=width*.5f,y=height*.5f;glDisable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);
         glColor3f(0,0,0);glLineWidth(3);glBegin(GL_LINES);glVertex2f(x-7,y);glVertex2f(x+7,y);glVertex2f(x,y-7);glVertex2f(x,y+7);glEnd();
         glColor3f(1,1,1);glLineWidth(1);glBegin(GL_LINES);glVertex2f(x-6,y);glVertex2f(x+6,y);glVertex2f(x,y-6);glVertex2f(x,y+6);glEnd();
@@ -1280,6 +1409,7 @@ static void overlay(void) {
     glPopMatrix();glMatrixMode(GL_PROJECTION);glPopMatrix();glMatrixMode(GL_MODELVIEW);glEnable(GL_DEPTH_TEST);
     visual=game_visual;tiles=game_tiles;font_tiles=game_font;
 }
+static int draw_frame_composite(int);
 #include "preview_vr.h"
 static int draw(void) {
     render_track=SIZE_MAX;
@@ -1297,7 +1427,7 @@ static int draw(void) {
     }
     if(cinema_mode && cinema_fov>0 && cinema_fov<32768){int half=cinema_fov/2,si=tomb_hazard_sine(sine_table,half),co=tomb_hazard_sine(sine_table,half+16384);if(si)focal=height*((320*co/si)/480.0);shot_roll=cinema_roll*(6.283185307179586/65536.0);}
     effect_focal=focal;
-    double half_x=5.0*width/focal,half_y=5.0*height/focal;
+    double half_x=5.0*width/(focal*render_pixel_scale),half_y=5.0*height/focal;
     double vr_fx=0,vr_fy=0,vr_cx=0,vr_cy=0;
     world_far_distance=world_far_plane();
     if(xr.render_eye>=0){XrFovf f=xr.views[xr.render_eye].fov;double l=tan(f.angleLeft),r=tan(f.angleRight),b=tan(f.angleDown),t=tan(f.angleUp);glFrustum(l*4,r*4,b*4,t*4,4,world_far_distance);vr_fx=width/(r-l);vr_fy=height/(t-b);vr_cx=-l*vr_fx;vr_cy=-b*vr_fy;focal=effect_focal=vr_fy;}
@@ -1325,7 +1455,7 @@ static int draw(void) {
     if(tomb_find_sector(level,(int32_t)eye[0],(int32_t)eye[1],(int32_t)eye[2],eye_room,&eye_ref))eye_room=eye_ref.room;
     water_eye=eye_room>=0 && (size_t)eye_room<level->room_count && (level->rooms[eye_room].flags&1);
     if(xr.render_eye>=0){if(!tomb_room_visibility_projection(visual,eye_room,eye,view,width,height,vr_fx,vr_fy,vr_cx,vr_cy,room_rects))return 0;}
-    else if(!cinema_mode && !tomb_room_visibility_focal(visual,eye_room,eye,view,width,height,focal,room_rects))return 0;
+    else if(!cinema_mode && !tomb_room_visibility_projection(visual,eye_room,eye,view,width,height,focal*render_pixel_scale,focal,width*.5,height*.5,room_rects))return 0;
     if(cinema_mode){for(size_t i=0;i<level->room_count;i++)room_rects[i]=(TombScreenRect){0,0,width,height};for(size_t i=0;i<level->room_count;i++)if(level->rooms[i].alternate>=0)room_rects[level->rooms[i].alternate]=(TombScreenRect){0};}
     for(size_t i=0;i<level->room_count;i++) {
         TombScreenRect clip=room_rects[i];
@@ -1334,7 +1464,7 @@ static int draw(void) {
         glScissor(clip.left,clip.bottom,clip.right-clip.left,clip.top-clip.bottom);
         const TombRoom *room=level->rooms+i;
         glPushMatrix(); glTranslatef((float)room->x,0,(float)room->z);
-        water_room=(room->flags&1)!=0;mesh(visual->rooms+i); glPopMatrix();
+        water_draw_room=i;water_object=water_room=(room->flags&1)!=0;mesh(visual->rooms+i);water_draw_room=SIZE_MAX; glPopMatrix();
         const TombMeshView *room_mesh=visual->rooms+i;
         for(size_t j=0;j<room_mesh->sprite_count;j++){
             const unsigned char *entry=room_mesh->sprites+j*4;
@@ -1354,7 +1484,7 @@ static int draw(void) {
                 glRotatef(p->rotation*(360.f/65536.f),0,1,0);
                 GLdouble object_view[16];glGetDoublev(GL_MODELVIEW_MATRIX,object_view);
                 tomb_light_static(tomb_word(p->intensity),lighting_depth(),&model_light);
-                if(tomb_static_visible_range(def,object_view,width,height,xr.render_eye>=0?vr_fx:tomb_preview_aspect_focal(height),xr.render_eye>=0?vr_fy:tomb_preview_aspect_focal(height),xr.render_eye>=0?vr_cx:width*.5,xr.render_eye>=0?vr_cy:height*.5,clip,world_far_distance))mesh(visual->meshes+def->mesh);
+                if(tomb_static_visible_range(def,object_view,width,height,xr.render_eye>=0?vr_fx:tomb_preview_aspect_focal(height)*render_pixel_scale,xr.render_eye>=0?vr_fy:tomb_preview_aspect_focal(height),xr.render_eye>=0?vr_cx:width*.5,xr.render_eye>=0?vr_cy:height*.5,clip,world_far_distance))mesh(visual->meshes+def->mesh);
                 glPopMatrix(); break;
             }
         }
@@ -1380,22 +1510,22 @@ static int draw(void) {
     if(!cinema_mode)water_particles_draw();
     /* FPS hands clear world depth. Keep them after the PS1 water pass so
        opaque walls still occlude water; world-space Lara stays before it. */
-    int defer_fps=visual->rgba_tiles && fps_overlay_active();
+    int defer_fps=(visual->rgba_tiles || water_ps1_colour()) && fps_overlay_active();
     int lara_ok=cinema_mode || defer_fps?1:lara();if(!cinema_mode)vr_hands_draw();
-    if(visual->rgba_tiles){
-        room_additive_pass=1;glPushMatrix();glLoadMatrixd(view);
+    if(visual->rgba_tiles || water_ps1_colour()){
+        room_translucent_pass=1;glPushMatrix();glLoadMatrixd(view);
         for(size_t i=0;i<level->room_count;i++){
             TombScreenRect clip=room_rects[i];if(clip.left>=clip.right || clip.bottom>=clip.top)continue;
             glEnable(GL_SCISSOR_TEST);glScissor(clip.left,clip.bottom,clip.right-clip.left,clip.top-clip.bottom);
             const TombRoom *room=level->rooms+i;
             glPushMatrix();glTranslatef((float)room->x,0,(float)room->z);
-            water_room=(room->flags&1)!=0;mesh(visual->rooms+i);glPopMatrix();
+            water_draw_room=i;water_object=water_room=(room->flags&1)!=0;mesh(visual->rooms+i);water_draw_room=SIZE_MAX;glPopMatrix();
         }
-        glPopMatrix();glDisable(GL_SCISSOR_TEST);room_additive_pass=0;
+        glPopMatrix();glDisable(GL_SCISSOR_TEST);room_translucent_pass=0;
     }
     water_room=0;
     if(defer_fps)lara_ok=lara();
-    water_eye=water_room=0; GLenum gl_error=glGetError();
+    water_eye=water_room=water_object=0; GLenum gl_error=glGetError();
     if(!lara_ok || gl_error)fprintf(stderr,"draw error: Lara=%d GL=%u state=%d animation=%d frame=%d\n",lara_ok,(unsigned)gl_error,play.lara.actor.current,play.lara.actor.animation,play.lara.actor.frame);
     return lara_ok && gl_error==GL_NO_ERROR;
 }
@@ -1407,27 +1537,43 @@ static int capture(const char *);
 #ifdef TOMB_BUILD_TESTS
 #include "../tests/vr_render.h"
 #endif
-static int draw_frame(void);
 #ifdef TOMB_BUILD_TESTS
+static int draw_frame(void);
 #include "../tests/block_render.h"
 #include "../tests/door_render.h"
 #include "../tests/remaining_render.h"
 #endif
-/* Detail Levels retain Low/Medium/High; modern hardware uses resolution
-   rather than DOS's software rasterizer perspective-correction thresholds. */
-static int draw_frame(void){
- if(settings_detail==2)return draw();
- static GLuint texture;int full_w=width,full_h=height;int target=settings_detail?480:240;
- /* Preserve vertical detail as the horizontal field of view expands. */
- if(height<=target)return draw();height=target;width=(int)(((int64_t)full_w*target+full_h/2)/full_h);if(width<1)width=1;
- int ok=draw(),w=width,h=height,pw=1,ph=1;while(pw<w)pw*=2;while(ph<h)ph*=2;
+/* Legacy saved values: DOS Low=0, DOS High=1, Full=2; PS1=3.
+   Extend horizontal resolution for widescreen and correct non-square pixels. */
+static int draw_frame_composite(int include_ui){
+ if(settings_detail==2){
+  int ok=1;if(include_ui==2 || (include_ui && title_mode)){glViewport(0,0,width,height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);}else ok=draw();
+  if(ok && include_ui)overlay();return ok;
+ }
+ static GLuint texture;int full_w=width,full_h=height;
+ int base_w=settings_detail==3?384:settings_detail==1?640:320;
+ int target=settings_detail==3?240:settings_detail==1?480:200;
+ width=(int)(((int64_t)full_w*base_w*3+full_h*2)/((int64_t)full_h*4));if(width<1)width=1;
+ height=target;
+ /* The back-buffer render path cannot exceed the drawable dimensions. */
+ if(width>full_w || height>full_h){double fit=fmin((double)full_w/width,(double)full_h/height);width=(int)(width*fit);height=(int)(height*fit);if(width<1)width=1;if(height<1)height=1;}
+ render_pixel_scale=(double)width*full_h/(height*(double)full_w);
+ int ok=1;
+ if(include_ui==2 || (include_ui && title_mode)){glViewport(0,0,width,height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);}else ok=draw();
+ int w=width,h=height,pw=1,ph=1;while(pw<w)pw*=2;while(ph<h)ph*=2;
+ render_pixel_scale=1.0;
+ /* Only backgrounds and inventory meshes share the world's raster.
+    Text and HUD are drawn sharply at display resolution after enlargement. */
+ if(ok && include_ui){width=full_w;height=full_h;overlay_pass=1;overlay();overlay_pass=0;width=w;height=h;}
  if(!texture)glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
- glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,pw,ph,0,GL_RGB,GL_UNSIGNED_BYTE,NULL);glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,w,h);
+ glTexImage2D(GL_TEXTURE_2D,0,GL_RGBA,pw,ph,0,GL_RGBA,GL_UNSIGNED_BYTE,NULL);glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,w,h);
  width=full_w;height=full_h;glViewport(0,0,width,height);glDisable(GL_SCISSOR_TEST);glDisable(GL_DEPTH_TEST);glDisable(GL_ALPHA_TEST);glEnable(GL_TEXTURE_2D);glColor3f(1,1,1);
  glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,width,0,height,-1,1);glMatrixMode(GL_MODELVIEW);glLoadIdentity();
- glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2i(0,0);glTexCoord2f((float)w/pw,0);glVertex2i(width,0);glTexCoord2f((float)w/pw,(float)h/ph);glVertex2i(width,height);glTexCoord2f(0,(float)h/ph);glVertex2i(0,height);glEnd();glDisable(GL_TEXTURE_2D);glEnable(GL_DEPTH_TEST);return ok;
+ glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2i(0,0);glTexCoord2f((float)w/pw,0);glVertex2i(width,0);glTexCoord2f((float)w/pw,(float)h/ph);glVertex2i(width,height);glTexCoord2f(0,(float)h/ph);glVertex2i(0,height);glEnd();glDisable(GL_TEXTURE_2D);glEnable(GL_DEPTH_TEST);
+ if(ok && include_ui){overlay_pass=2;overlay();overlay_pass=0;}return ok;
 }
 #ifdef TOMB_BUILD_TESTS
+static int draw_frame(void){return draw_frame_composite(0);}
 #include "../tests/water_render.h"
 #include "../tests/jaw_render.h"
 #endif
@@ -1451,7 +1597,7 @@ static int capture(const char *path) {
 #include "../tests/midas_render.h"
 #endif
 static unsigned menu_entries=0;
-static unsigned char held_keys[256];
+static unsigned char held_keys[256],stats_consumed_keys[256];
 /* Desktop presentation limits never throttle the headset compositor. */
 static void display_size(HWND window){
     RECT client;GetClientRect(window,&client);width=client.right>0?client.right:1;height=client.bottom>0?client.bottom:1;
@@ -1523,6 +1669,12 @@ static unsigned game_input(void) {
 static int fullscreen;
 static int mouse_captured,mouse_camera_active;
 static void mouse_release(void){if(mouse_captured){ClipCursor(NULL);ReleaseCapture();ShowCursor(TRUE);mouse_captured=0;}}
+static void mouse_inventory_begin(void){
+    mouse_camera_active=0;
+    /* Quest rings can open after this frame's mouse_update. Fullscreen keeps
+       capture throughout menus, so do not expose the cursor between frames. */
+    if(!fullscreen)mouse_release();
+}
 static void mouse_update(HWND window,int suspended){
     if(xr.instance){mouse_release();mouse_camera_active=0;return;}
     mouse_camera_active=play.shooter.mode && !suspended && play.lara.health>0 && !media_busy;
@@ -1572,13 +1724,18 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
         RAWINPUT raw;UINT bytes=sizeof raw;
         if(GetRawInputData((HRAWINPUT)lp,RID_INPUT,&raw,&bytes,sizeof(RAWINPUTHEADER))==sizeof raw && raw.header.dwType==RIM_TYPEMOUSE && mouse_captured && mouse_camera_active && !(raw.data.mouse.usFlags&MOUSE_MOVE_ABSOLUTE))tomb_shooter_mouse(&play,raw.data.mouse.lLastX,raw.data.mouse.lLastY);
     }
-    if(msg==WM_KILLFOCUS){memset(held_keys,0,sizeof held_keys);mouse_release();}
+    if(msg==WM_KILLFOCUS){memset(held_keys,0,sizeof held_keys);memset(stats_consumed_keys,0,sizeof stats_consumed_keys);mouse_release();}
     if(msg==WM_LBUTTONDOWN || msg==WM_LBUTTONUP || msg==WM_RBUTTONDOWN || msg==WM_RBUTTONUP || msg==WM_MBUTTONDOWN || msg==WM_MBUTTONUP){
         unsigned key=(msg==WM_LBUTTONDOWN || msg==WM_LBUTTONUP)?VK_LBUTTON:(msg==WM_RBUTTONDOWN || msg==WM_RBUTTONUP)?VK_RBUTTON:VK_MBUTTON;
         int down=msg==WM_LBUTTONDOWN || msg==WM_RBUTTONDOWN || msg==WM_MBUTTONDOWN;wp=key;lp=0;msg=down?WM_KEYDOWN:WM_KEYUP;
     }
     if(msg==WM_KEYDOWN || msg==WM_KEYUP || msg==WM_SYSKEYDOWN || msg==WM_SYSKEYUP) {
         wp=input_key(wp,lp);
+        if(wp<256 && stats_consumed_keys[wp]){
+            held_keys[wp]=0;
+            if(msg==WM_KEYUP || msg==WM_SYSKEYUP)stats_consumed_keys[wp]=0;
+            return 0;
+        }
         if(wp<256)held_keys[wp]=(msg==WM_KEYDOWN || msg==WM_SYSKEYDOWN);
     }
     if(msg==WM_ENTERMENULOOP) { ++menu_entries; return 0; }
@@ -1593,6 +1750,8 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     if(media_busy && (msg==WM_KEYDOWN || msg==WM_KEYUP || msg==WM_SYSKEYDOWN || msg==WM_SYSKEYUP)){if(msg==WM_KEYDOWN && wp==VK_ESCAPE && !(lp&(1L<<30)))media_skip=1;return 0;}
     if(msg==WM_KEYDOWN) {
         if(binding_wait && !(lp&(1L<<30))){if(wp!=VK_ESCAPE && wp>0 && wp<256){control_bindings()[option_row]=(unsigned)wp;settings_write();}binding_wait=0;return 0;}
+        int detail_row=wp==VK_F1?1:wp==VK_F2?2:wp==VK_F3?3:wp==VK_F4?4:wp==VK_F7?5:wp==VK_F8?6:wp==VK_F9?7:0;
+        if(detail_row){if(wp<256)held_keys[wp]=0;if(!(lp&(1L<<30))){frontend_detail_cycle(detail_row,1);if(!title_mode){frontend_detail_notice(detail_row);detail_notice_time=3.0;}settings_write();}return 0;}
         if(wp==VK_F5 || wp==VK_F6){
             if(wp==VK_F5 && (play.gameplay_options&TOMB_SAVE_CRYSTALS))return 0;
             if(!(lp&(1L<<30)) && !title_mode && !cinema_mode && !paused && !inventory_open &&
@@ -1604,7 +1763,7 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
             return 0;
         }
         if(caves && objects.progress->complete && !title_mode) {
-            if(wp==VK_RETURN || wp==(play.shooter.mode?active_mode_bindings()[6]:bindings[8])){if(!(lp&(1L<<30)))load_next_level();return 0;}
+            if(wp==VK_RETURN || wp==(play.shooter.mode?active_mode_bindings()[6]:bindings[8])){if(!(lp&(1L<<30))){if(wp<256){stats_consumed_keys[wp]=1;held_keys[wp]=0;}load_next_level();}return 0;}
             if(wp!='R')return 0;
         }
         if(wp==(play.shooter.mode?active_mode_bindings()[play.shooter.mode==TOMB_MODE_FPS?9:8]:bindings[12]) || wp==VK_ESCAPE) {
@@ -1633,13 +1792,16 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
         if(wp=='P') paused=!paused;
         if(!play.shooter.mode && wp==bindings[9] && !(lp&(1L<<30)))draw_requested=1;
         if(wp=='R') { xr.reset=1;int mode=play.shooter.mode;uint32_t custom_options=play.gameplay_options;cutscene_seen=0;water_particles_reset();tomb_objects_reset(&objects); audio_stop();tomb_sound_output_reset(sound_output);paused=0;camera_hold=0;camera.ready=0;render_reset(); orbit=0; distance=1536; elapsed=0; accumulator=0; pose_mode=0; tomb_playtest_init(&play,level,sine_table,visual); play.movement_only=caves;play.objects=caves?&objects:NULL;if(level_number==0){play.inventory.counts[0]=0;play.inventory.ammo[0]=0;}tomb_gameplay_start(&play,custom_options);tomb_shooter_start(&play,mode);level_inventory=play.inventory; }
-        if(wp=='R'){objects.progress->music.current_track=music_selected==0?0:tomb_music_level_track(level_number);draw_requested=0;inventory_open=death_menu=slot_menu=0;play.inventory=level_inventory;}
+        if(wp=='R'){objects.progress->music.current_track=music_source()==0?0:tomb_music_level_track(level_number);draw_requested=0;inventory_open=death_menu=slot_menu=0;play.inventory=level_inventory;}
         return 0;
     }
     return DefWindowProcA(w,msg,wp,lp);
 }
 #ifdef TOMB_BUILD_TESTS
 #include "../tests/frontend_test.h"
+#include "../tests/details_menu.h"
+#include "../tests/campaign_test.h"
+#include "../tests/colour_options_render.h"
 #include "../tests/autosave_switch_test.h"
 #include "../tests/render_options_test.h"
 #include "../tests/pickup_depth_render.h"
@@ -1673,7 +1835,10 @@ int main(int argc,char **argv) {
         if(!strcmp(argv[i],"--title")){title_mode=1;caves=1;}
         else if(!strcmp(argv[i],"--autosave-switch-test")){autosave_switch_test=front_test=caves=1;}
         else if(!strcmp(argv[i],"--frontend-test")){front_test=1;caves=1;}
+        else if(!strcmp(argv[i],"--campaign-test"))lighting_test=1;
+        else if(!strcmp(argv[i],"--colour-options-test") || !strcmp(argv[i],"--details-menu-test"))lighting_test=1;
         else if(!strcmp(argv[i],"--pickup3d-test") || !strcmp(argv[i],"--pickup-depth-test") || !strcmp(argv[i],"--lighting-test") || !strcmp(argv[i],"--render-options-test") || !strcmp(argv[i],"--original-review-test") || !strcmp(argv[i],"--consistent-weapons-test"))lighting_test=1;
+        else if(!strcmp(argv[i],"--cutscene-resolution-test"))lighting_test=1;
         else if(!strcmp(argv[i],"--water-render-test"))water_render_test=1;
         else if(!strcmp(argv[i],"--interpolation-test"))interpolation_test=1;
         else if(!strcmp(argv[i],"--frontend-capture") && i+1<argc){front_capture=atoi(argv[++i]);title_mode=1;caves=1;}
@@ -1686,7 +1851,7 @@ int main(int argc,char **argv) {
         else if(!strcmp(argv[i],"--cutscene"))cutscene_only=1;
         else if(!strcmp(argv[i],"--fmv") && i+1<argc)movie_only=argv[++i];
         else if(!strcmp(argv[i],"--capture") && i+1<argc) shot=argv[++i];
-        else if(!strcmp(argv[i],"--level-menu-test"))return level_picker(1)==15 && level_picker(2)==-1?0:2;
+        else if(!strcmp(argv[i],"--level-menu-test"))return level_picker(1)==UB_LAST_LEVEL && level_picker(2)==-1?0:2;
         else if(!strcmp(argv[i],"--level-menu"))select_level=1;
         else if(!strcmp(argv[i],"--level") && i+1<argc){
             char *end=NULL;long n=strtol(argv[++i],&end,10);
@@ -1712,6 +1877,9 @@ int main(int argc,char **argv) {
         else if(!strcmp(argv[i],"--forward-test")) forward_test=1;
         else if(!strcmp(argv[i],"--vault-test") && i+1<argc) vault_test=atoi(argv[++i]);
         else if(!strcmp(argv[i],"--window-input-test")) window_input_test=1;
+        else if(!strcmp(argv[i],"--stats-input-test")) window_input_test=4;
+        else if(!strcmp(argv[i],"--combined-audio-test")) window_input_test=5;
+        else if(!strcmp(argv[i],"--inventory-cursor-test"))window_input_test=3;
         else if(!strcmp(argv[i],"--default-bindings-test")) window_input_test=2;
         else if(!strcmp(argv[i],"--media-audio-test"))media_test=2;
         else if(!strcmp(argv[i],"--climb-test")) { climb_test=1; grab_test=1; }
@@ -1742,10 +1910,10 @@ int main(int argc,char **argv) {
     if(slide_test && (!caves || slide_test<1 || slide_test>2))return 1;
     if(caves) {
         if(render_test || gym_test || pool_test || forward_test || vault_test || climb_test || grab_test || standing_test || jump_test || fast_fall_test || ledge_test)return 1;
-        asset_path(path,level_choices[level_number].file);
+        game_level_path(path,level_number);campaign_selected=level_number>=UB_FIRST_LEVEL;
     }
     level=tomb_level_load(path,error,sizeof error);
-    if(level)level->music_edition=music_selected==0?2:1;
+    if(level)level->music_edition=music_source()==0?2:1;
     if(!level || !(visual=tomb_visual_load(level,error,sizeof error)) || !tomb_lara_start(level,&start)) {
         if(shot){FILE *failure=fopen("build/level-load-error.txt","w");if(failure){fprintf(failure,"%s: %s (level=%d visual=%d)\n",path,error,level!=NULL,visual!=NULL);fclose(failure);}}
         else MessageBoxA(NULL,error[0]?error:"Lara start data is unavailable.","Cannot load level",MB_ICONERROR); return 1;
@@ -1761,7 +1929,7 @@ int main(int argc,char **argv) {
     if(!tomb_playtest_init(&play,level,sine_table,visual)) return 1;
     if(level_number==0){play.inventory.counts[0]=0;play.inventory.ammo[0]=0;}
     play.movement_only=caves;play.objects=caves?&objects:NULL;level_inventory=play.inventory;
-    objects.progress->music.current_track=music_selected==0?0:tomb_music_level_track(level_number);
+    objects.progress->music.current_track=music_source()==0?0:tomb_music_level_track(level_number);
     if(interest_test){if(level_number!=1)return 1;interest_start();}
     if(city_test){if(level_number!=2 || city_test<1 || city_test>8 || !shot)return 1;city_start(city_test-1);}
     if(shotgun_test){if(!caves || !shot)return 1;tomb_inventory_add(&play.inventory,85);play.inventory.ammo[1]=120;play.requested_weapon=4;}
@@ -1870,7 +2038,60 @@ int main(int argc,char **argv) {
             SendMessageA(window,WM_SETCURSOR,(WPARAM)window,MAKELPARAM(HTCLIENT,WM_MOUSEMOVE));
             cursor_ok=cursor_ok && GetCursor()!=NULL;
         }
+        /* Both keyboard and quest inventory entry use the same transition. */
+        for(int full=0;full<2;full++){
+            fullscreen=full;SetCapture(window);ShowCursor(FALSE);mouse_captured=mouse_camera_active=1;
+            mouse_inventory_begin();
+            cursor_ok=cursor_ok && !mouse_camera_active && mouse_captured==full;
+            cursor_ok=cursor_ok && (GetCapture()==window)==full;
+            mouse_release();
+        }
+        fullscreen=0;
         SetCursor(saved_cursor);
+        if(window_input_test==3){DestroyWindow(window);tomb_visual_free(visual);tomb_level_free(level);return cursor_ok?0:2;}
+        if(window_input_test==5){
+            front_test=1;
+            int passed=source_choose_media(11,3)==3 && source_choose_media(2,3)==1;
+            passed=passed && source_cycle_mask(0,1,11)==3 && source_cycle_mask(3,1,11)==1;
+            const unsigned keys[]={VK_F1,VK_F2,VK_F3,VK_F4,VK_F7,VK_F8,VK_F9};
+            int *values[]={&settings_detail,&settings_force43,&settings_framerate,&settings_full_colour,&settings_texture_filtering,&settings_draw_distance,&settings_water_style};
+            for(int i=0;i<7;i++){
+                int old=*values[i];SendMessageA(window,WM_KEYDOWN,keys[i],0);
+                passed=passed && *values[i]!=old && settings_preset==-1;
+                passed=passed && detail_notice_time==3.0 && strstr(detail_notice,": ");
+                int next=*values[i];SendMessageA(window,WM_KEYDOWN,keys[i],(LPARAM)(1u<<30));
+                passed=passed && *values[i]==next;SendMessageA(window,WM_KEYUP,keys[i],0);
+            }
+            snprintf(install_root,sizeof install_root,"work/audio-fixture");source_legacy=0;
+            music_selected=3;title_mode=0;caves=1;level_number=16;
+            audio_stop();objects.progress->music.current_track=0;objects.progress->music.audio_serial=0;
+            audio_update(0,.25);passed=passed && music_output && combined_background && playing_track==59 && combined_background_gain==.25;
+            audio_update(1,.5);passed=passed && combined_background_gain==.25;
+            objects.progress->music.current_track=13;++objects.progress->music.audio_serial;
+            audio_update(0,.01);passed=passed && music_output && !combined_background && playing_track==13;
+            objects.progress->music.current_track=14;++objects.progress->music.audio_serial;
+            audio_update(0,.01);passed=passed && music_output && !combined_background && playing_track==14;
+            music_sample.frames=0;audio_update(0,.1);
+            passed=passed && music_output && combined_background && playing_track==59 && combined_background_gain==.1;
+            audio_update(0,2);passed=passed && combined_background_gain==1;
+            audio_stop();title_mode=1;audio_update(0,.2);
+            passed=passed && music_output && !combined_background && playing_track==2;
+            audio_stop();fprintf(stderr,"Combined audio and detail shortcuts: %s\n",passed?"PASS":"FAIL");
+            DestroyWindow(window);tomb_visual_free(visual);tomb_level_free(level);return passed?0:2;
+        }
+        if(window_input_test==4){
+            int passed=1;
+            const unsigned keys[]={VK_CONTROL,VK_RETURN};
+            for(int i=0;i<2;i++){
+                memset(held_keys,0,sizeof held_keys);stats_consumed_keys[keys[i]]=1;
+                SendMessageA(window,WM_KEYDOWN,keys[i],(LPARAM)(1u<<30));passed=passed && !game_input();
+                SendMessageA(window,WM_KEYUP,keys[i],0);passed=passed && !stats_consumed_keys[keys[i]] && !game_input();
+                SendMessageA(window,WM_KEYDOWN,keys[i],0);passed=passed && game_input()==64;
+                SendMessageA(window,WM_KEYUP,keys[i],0);
+            }
+            fprintf(stderr,"Stats confirmation release test: %s\n",passed?"PASS":"FAIL");
+            DestroyWindow(window);tomb_visual_free(visual);tomb_level_free(level);return passed?0:2;
+        }
         SendMessageA(window,WM_SYSKEYDOWN,VK_MENU,0x20380001);
         SendMessageA(window,WM_SYSKEYUP,VK_MENU,(LPARAM)0xc0380001u);
         SendMessageA(window,WM_SYSCOMMAND,SC_KEYMENU,0);
@@ -1908,6 +2129,12 @@ int main(int argc,char **argv) {
                 SendMessageA(window,WM_KEYDOWN,keys[k],1);passed=passed && game_input()==bits[k];
                 SendMessageA(window,WM_KEYUP,keys[k],1);passed=passed && !game_input();
             }
+            /* A stats-confirmation key stays consumed through repeat events. */
+            stats_consumed_keys[VK_CONTROL]=1;
+            SendMessageA(window,WM_KEYDOWN,VK_CONTROL,(LPARAM)(1u<<30));passed=passed && !game_input();
+            SendMessageA(window,WM_KEYUP,VK_CONTROL,0);passed=passed && !stats_consumed_keys[VK_CONTROL] && !game_input();
+            SendMessageA(window,WM_KEYDOWN,VK_CONTROL,0);passed=passed && game_input()==64;
+            SendMessageA(window,WM_KEYUP,VK_CONTROL,0);
             const unsigned nav[]={VK_UP,VK_DOWN,VK_LEFT,VK_RIGHT};
             const unsigned scans[]={0x48,0x50,0x4b,0x4d,0x47,0x49};
             for(unsigned k=0;k<4;k++) {
@@ -2010,7 +2237,8 @@ int main(int argc,char **argv) {
             if(!tomb_playtest_tick(&play,64) || !play.quest_request)return 3;
             inventory_begin();for(int t=0;t<20;t++)inventory_tick(0);
             if(!inventory_keys || !inventory_open || inventory_ring.count!=1)return 4;
-            SendMessageA(window,WM_KEYDOWN,variant?VK_RETURN:'S',1);inventory_tick(inventory_input);inventory_input=0;
+            /* Exercise the configured Action key as well as Enter. */
+            SendMessageA(window,WM_KEYDOWN,variant?VK_RETURN:bindings[8],1);inventory_tick(inventory_input);inventory_input=0;
             for(int t=0;t<100 && inventory_open;t++)inventory_tick(0);
             if(inventory_open || play.inventory.chosen!=(variant?114:133))return 5;
             for(int t=0;t<180;t++)if(!tomb_playtest_tick(&play,0))return 6;
@@ -2074,6 +2302,19 @@ int main(int argc,char **argv) {
     if(strstr(GetCommandLineA(),"--render-options-test"))return render_options_check()?0:2;
     if(strstr(GetCommandLineA(),"--pickup3d-test"))return pickup3d_check()?0:2;
     if(strstr(GetCommandLineA(),"--pickup-depth-test"))return pickup_depth_check()?0:2;
+    if(strstr(GetCommandLineA(),"--details-menu-test"))return details_menu_check()?0:2;
+    if(strstr(GetCommandLineA(),"--colour-options-test"))return colour_options_check()?0:2;
+    if(strstr(GetCommandLineA(),"--cutscene-resolution-test")){
+        objects.progress->complete=1;
+        for(int detail=0;detail<4;detail++){
+            settings_detail=detail;
+            for(int sequence=1;sequence<=4;sequence++){
+                if(!play_cutscene_sequence(1,sequence) || !cinematic_pixels)return 2;
+            }
+        }
+        fprintf(stderr,"PASS: all four cutscenes at all four resolutions, final backdrop matches displayed frame\n");return 0;
+    }
+    if(strstr(GetCommandLineA(),"--campaign-test"))return campaign_check()?0:2;
     if(lighting_test)return lighting_render_check()?0:2;
     if(water_render_test)return water_render_check()?0:2;
     if(interpolation_test){int passed=interpolation_render_check();if(passed && shot)passed=capture(shot);return passed?0:2;}
@@ -2174,6 +2415,8 @@ int main(int argc,char **argv) {
                 if(!render_capture()){ok=0;break;}
             }
         }
+        if(!suspended && !title_mode && level_name_time>0)level_name_time=fmax(0,level_name_time-dt);
+        if(focused && detail_notice_time>0)detail_notice_time=fmax(0,detail_notice_time-dt);
         mouse_update(window,suspended);
         was_suspended=suspended;
         if(!shot && !pose_mode && !paused && !inventory_pauses() && !objects.progress->complete && focused) {
@@ -2201,9 +2444,15 @@ int main(int argc,char **argv) {
             cutscene_seen=1;if(level_number==14)play_movie("PRISON",0);if(!play_cutscene_sequence(0,level_number==4?1:level_number==9?2:level_number==13?3:4))MessageBoxA(window,"Could not play cinematic. Check converted CUT1-CUT4 levels and audio assets.","Tomb Raider Beyond",MB_OK|MB_ICONWARNING);
             backdrop_dirty=1;QueryPerformanceCounter(&last);
         }
+        /* Preserve completion cinematics, then advance without drawing statistics. */
+        if(!shot && running && !title_mode && !paused && focused && objects.progress->complete &&
+           (play.gameplay_options&TOMB_SKIP_STATS)){
+            if(xr.begun)xr_end(0,0);
+            if(!load_next_level()){ok=0;break;}
+            QueryPerformanceCounter(&last);continue;
+        }
         if(shot) elapsed=shot_time;
-        if(title_mode){glViewport(0,0,width,height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);}else if(!draw_frame()) { ok=0; break; }
-        overlay();
+        if(!draw_frame_composite(1)) { ok=0; break; }
         for(int h=0;h<2;h++)if(vr.fired[h]){xr_feedback(h,.65f);vr.fired[h]=0;}
         if(!vr_render()){ok=0;break;}
         if(shot) { ok=capture(shot); break; }
@@ -2215,7 +2464,7 @@ int main(int argc,char **argv) {
     if(jaw_log){fclose(jaw_log);jaw_log=NULL;}
     xr_close();mouse_release();render_reset();frontend_free();audio_stop();
     tomb_sound_output_close(ring_sound_output);tomb_sound_output_close(sound_output);tomb_sound_bank_free(&sound_bank);
-    glDeleteTextures((GLsizei)visual->tile_count,font_tiles);free(font_tiles);glDeleteTextures((GLsizei)(visual->tile_count*2+1),tiles); free(tiles);
+    glDeleteTextures((GLsizei)visual->tile_count,font_tiles);free(font_tiles);glDeleteTextures((GLsizei)(visual->tile_count*2+2),tiles); free(tiles);
     glDeleteTextures(2,shadow_textures);
     light_DeleteProgram(shade_program);
     wglMakeCurrent(NULL,NULL); wglDeleteContext(context); ReleaseDC(window,dc); DestroyWindow(window);

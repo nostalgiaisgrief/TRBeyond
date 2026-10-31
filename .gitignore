@@ -27,6 +27,7 @@
 !/tools/convert_assets.py
 !/tools/convert_ps1.py
 !/tools/import_ps1.py
+!/tools/prepare_ub.py
 !/tools/ps1_picture.py
 !/tools/prepare_movies.py
 !/tools/inspect_reference.py

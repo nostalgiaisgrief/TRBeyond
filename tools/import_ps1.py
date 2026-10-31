@@ -28,7 +28,7 @@ def inspect(selected):
     finally:disc.file.close()
 
 def install(selected,destination,payload,progress,cancel):
-    from setup_import import Image,LEVELS,RUNTIME_FILES,check_cancel,generated_sine
+    from setup_import import Image,LEVELS,RUNTIME_FILES,check_cancel,generated_sine,install_bundled_campaign
     destination,payload=Path(destination).resolve(),Path(payload).resolve()
     if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):raise ValueError('Choose a new or empty installation folder.')
     plan=inspect(selected);destination.parent.mkdir(parents=True,exist_ok=True)
@@ -43,6 +43,7 @@ def install(selected,destination,payload,progress,cancel):
         for folder in ('PSXDATA','DELDATA','FMV','AUDIO'):(source/'Original'/folder).mkdir(parents=True)
         (stage/'Custom').mkdir()
         for name in RUNTIME_FILES:shutil.copy2(payload/name,stage/name)
+        install_bundled_campaign(stage,payload)
         (stage/'sine.bin').write_bytes(generated_sine())
         track=plan['tracks'][0];disc=Image(track['file'],2352,track['begin'],2)
         try:

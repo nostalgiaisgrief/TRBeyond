@@ -161,7 +161,7 @@ static int objects_collide(TombObjects *w,TombActor *a,TombContact *c,TombAnimCo
         TombObject *o=w->items+i;
         if(only_object>=0 && o->object!=only_object)continue;
         if(o->object==83 && only_object!=83)continue;
-        if(o->object==145 || (w->invincible && (o->object==37 || o->object==38 || o->object==180)))continue;
+        if(o->object==145 || (w->invincible && (o->object==37 || (o->object==38 && (o->actor.flags&6)==2) || o->object==180)))continue;
         if(part){if(!tomb_folly_head(w,o,&head))return 0;o=&head;if(o->actor.current==2)continue;}
         int enemy=tomb_enemy_object(o->object),blade=o->object==36 || o->object==42,solid=o->object==83 || o->object==147 || o->object==161 || o->object==163 || o->object==177 || o->object==181,hazard=o->object==180 || o->object==43 || o->object==24 || o->object==37 || o->object==38 || o->object==53;
         if((!enemy && !blade && !hazard && !solid && o->object!=44 && o->object!=45 && o->object!=47 && (o->object<57 || o->object>64 || !(c->flags&8))) || !(o->actor.flags&32) || (o->actor.flags&6)==6)continue;

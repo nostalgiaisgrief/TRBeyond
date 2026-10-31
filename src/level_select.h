@@ -18,8 +18,14 @@ static const struct TombLevelChoice level_choices[] = {
  {"Sanctuary of the Scion","LEVEL8C.PHD"},
  {"Natla's Mines","LEVEL10A.PHD"},
  {"Atlantis","LEVEL10B.PHD"},
- {"The Great Pyramid","LEVEL10C.PHD"}
+ {"The Great Pyramid","LEVEL10C.PHD"},
+ {"Return to Egypt","EGYPT.TBL"},
+ {"Temple of the Cat","CAT.TBL"},
+ {"Atlantean Stronghold","END.TBL"},
+ {"The Hive","END2.TBL"}
 };
+#define UB_FIRST_LEVEL 16
+#define UB_LAST_LEVEL 19
 #define LEVEL_CHOICE_COUNT ((int)(sizeof level_choices/sizeof level_choices[0]))
 static HWND level_list;
 static int level_choice_done,level_choice_result;

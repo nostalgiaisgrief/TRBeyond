@@ -43,7 +43,7 @@ class Reader:
         return count
 
 
-def dos_sections(data):
+def dos_sections(data, early_palette=False):
     if not 8 <= len(data) <= LIMIT:
         raise ValueError('Invalid level length')
     r = Reader(data)
@@ -79,16 +79,44 @@ def dos_sections(data):
     start = r.at
     for width in (20, 16, 8): r.array(width)
     section('TEXI', start)
+    palette = r.take(768) if early_palette else None
     start = r.at
     r.array(16); r.array(16)
     boxes = r.array(20)
     r.array(2); r.take(boxes, 12); r.array(2); r.array(22)
     section('WRLD', start)
-    start = r.at; r.take(8192+768); section('PALT', start)
+    start = r.at; r.take(8192)
+    if palette is None:
+        r.take(768); section('PALT', start)
+    else:
+        sections['PALT'] = data[start:r.at] + palette
     start = r.at; r.array(16, 2); r.array(1, 2); section('CINE', start)
     start = r.at; r.take(256, 2); r.array(8); r.array(1); r.array(4); section('SFXB', start)
     if r.at != len(data):
         raise ValueError('Unexpected trailing level data')
+    return sections
+
+
+def ub_room_sprites(sections):
+    # The released Egypt files refer to sprite 140 although their table ends
+    # at 138. Omit those three nonexistent decorations, never read past TEXI.
+    textures = Reader(sections['TEXI']); textures.array(20)
+    sprite_count = textures.array(16)
+    data = sections['ROOM']; r = Reader(data); rooms = r.number(2)
+    result = bytearray(struct.pack('<H', rooms))
+    for _ in range(rooms):
+        header = r.take(16); geometry = r.take(r.number(), 2)
+        mesh = Reader(geometry); mesh.array(8, 2); mesh.array(10, 2); mesh.array(8, 2)
+        count_at = mesh.at; count = mesh.number(2); sprites = [mesh.take(4) for _ in range(count)]
+        if mesh.at != len(geometry): raise ValueError('Unexpected UB room mesh data')
+        valid = [entry for entry in sprites if int.from_bytes(entry[2:], 'little') < sprite_count]
+        geometry = geometry[:count_at] + struct.pack('<H', len(valid)) + b''.join(valid)
+        result += header + struct.pack('<I', len(geometry)//2) + geometry
+        start = r.at; r.array(32, 2); nz, nx = r.number(2), r.number(2)
+        r.take(nz*nx, 8); r.take(2); r.array(18, 2); r.array(18, 2); r.take(4)
+        result += data[start:r.at]
+    if r.at != len(data): raise ValueError('Unexpected UB room data')
+    sections['ROOM'] = bytes(result)
     return sections
 
 
@@ -137,8 +165,11 @@ def decode(data):
 def convert_level(source, destination):
     source, destination = Path(source), Path(destination)
     data = source.read_bytes()
-    encoded = encode(data)
-    if decode(encoded) != dos_sections(data): raise ValueError('Conversion verification failed')
+    sections = dos_sections(data, early_palette=source.suffix.upper()=='.TUB')
+    if source.suffix.upper()=='.TUB':
+        sections = ub_room_sprites(sections)
+    encoded = encode_sections(data, sections)
+    if decode(encoded) != sections: raise ValueError('Conversion verification failed')
     destination.parent.mkdir(parents=True, exist_ok=True)
     temporary = destination.with_suffix(destination.suffix+'.tmp')
     try:

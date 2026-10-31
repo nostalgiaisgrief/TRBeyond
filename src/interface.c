@@ -24,7 +24,7 @@ void tomb_hud_bar(int percent,int air,int width,TombBarLine line,void *u){
 const char *tomb_inventory_name(int id){switch(id){case 127:return "Lead Bar";case 150:return "Scion";case 114:return "Gold Idol";case 133:return "Silver Key";case 72:return "Compass";case 99:return "Pistols";case 100:return "Shotgun";case 101:return "Magnums";case 102:return "Uzis";case 104:return "Shotgun Shells";case 105:return "Magnum Clips";case 106:return "Uzi Clips";case 108:return "Small Medi Pack";case 109:return "Large Medi Pack";default:return "";}}
 const char *tomb_inventory_level_name(int level,int id){
  /* Original level-indexed strings at c1b70..c1ee0. */
- static const char *names[16][8]={
+ static const char *names[20][8]={
   {0},{0},{"Gold Idol",0,0,0,"Silver Key"},{"Machine Cog"},{0},
   {0,0,0,0,"Neptune Key","Atlas Key","Damocles Key","Thor Key"},
   {0,0,0,0,"Rusty Key"},{"Gold Bar"},
@@ -32,10 +32,11 @@ const char *tomb_inventory_level_name(int level,int id){
   {0,0,0,0,"Gold Key","Rusty Key","Rusty Key"},
   {0,0,0,0,"Saphire Key"},
   {"Eye of Horus","Scarab","Seal of Anubis","Ankh","Saphire Key"},
-  {"Ankh","Scarab",0,0,"Gold Key"},{"Fuse","Pyramid Key"},{0},{0}
+  {"Ankh","Scarab",0,0,"Gold Key"},{"Fuse","Pyramid Key"},{0},{0},
+  {0,0,0,0,"Gold Key"},{0,0,0,0,"Ornate Key"},{0},{0}
  };
  int slot=tomb_quest_slot(id);
- if(slot>=0 && level>=0 && level<16)return names[level][slot]?names[level][slot]:"";
+ if(slot>=0 && level>=0 && level<20)return names[level][slot]?names[level][slot]:"";
  return tomb_inventory_name(id);
 }
 static void number_glyphs(char *s){for(;*s;s++)if(*s!=' ')*s=(char)((unsigned char)*s-(*s>='A'?0x35:0x2f));}
@@ -49,8 +50,8 @@ int tomb_inventory_label(const TombInventory *inv,int id,char out[64]){
 }
 /* DOS completion screen reads the level-indexed table at 0xc1992. */
 int tomb_level_secret_total(int level){
- static const unsigned char totals[16]={0,3,3,5,3,4,3,3,3,2,3,3,1,3,3,3};
- return level>=0 && level<16?totals[level]:0;
+ static const unsigned char totals[20]={0,3,3,5,3,4,3,3,3,2,3,3,1,3,3,3,3,4,2,1};
+ return level>=0 && level<20?totals[level]:0;
 }
 void tomb_statistics(unsigned ticks,unsigned kills,unsigned pickups,unsigned secrets,int total,char out[4][80]){
  unsigned n=0;for(unsigned bits=secrets&65535;bits;bits>>=1)n+=bits&1;

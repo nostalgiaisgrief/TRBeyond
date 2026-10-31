@@ -17,6 +17,8 @@ try {
     if (Test-Path -LiteralPath $legacyPayload) { Remove-Item -LiteralPath $legacyPayload }
     Copy-Item -LiteralPath third_party/openxr/bin/openxr_loader.dll -Destination "$payload/openxr_loader.dll" -Force
     Copy-Item -LiteralPath third_party/openxr/LICENSE -Destination "$payload/OPENXR-LICENSE.txt" -Force
+    & $Python tools/prepare_ub.py data_reference_files/UB/DATA "$payload/Source/UB"
+    if ($LASTEXITCODE -ne 0) { throw 'Unfinished Business asset preparation failed' }
     # Remove documentation staged by earlier builds; only runtime files ship.
     Get-ChildItem -LiteralPath $payload -File -Filter '*.md' | ForEach-Object {
         Remove-Item -LiteralPath $_.FullName

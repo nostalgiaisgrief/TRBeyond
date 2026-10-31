@@ -1,7 +1,30 @@
+static void frontend_detail_notice(int row){
+ const char *names[]={"","Resolution","Force 4:3","Framerate Limit","Colour Depth","Texture Filtering","Draw Distance","Water Style"};
+ const char *value=row==1?(settings_detail==2?"Full":settings_detail==1?"DOS High":settings_detail==3?"PS1":"DOS Low"):
+  row==2?(settings_force43?"On":"Off"):
+  row==3?(settings_framerate==0?"Off":settings_framerate==1?"60":"30"):
+  row==4?(settings_full_colour?"Full Colour":"256 Colours"):
+  row==5?(settings_texture_filtering?"On":"Off"):
+  row==6?draw_distance_names[settings_draw_distance]:visual_style_names[settings_water_style];
+ snprintf(detail_notice,sizeof detail_notice,"%s: %s",names[row],value);
+}
+static void frontend_detail_cycle(int row,int forward){
+    if(row==1){static const int next[4]={3,0,1,2},previous[4]={1,2,3,0};settings_detail=forward?next[settings_detail]:previous[settings_detail];}
+    else if(row==2)settings_force43=!settings_force43;
+    else if(row==3)settings_framerate=(settings_framerate+(forward?1:2))%3;
+    else if(row==4){settings_full_colour=!settings_full_colour;if(!settings_full_colour)settings_texture_filtering=0;}
+    else if(row==5){settings_texture_filtering=!settings_texture_filtering;if(settings_texture_filtering)settings_full_colour=1;}
+    else if(row==6)settings_draw_distance=(settings_draw_distance+(forward?1:2))%3;
+    else if(row==7){static const int next[4]={3,2,0,1},previous[4]={2,3,1,0};settings_water_style=forward?next[settings_water_style]:previous[settings_water_style];}
+
+ settings_preset=-1;
+}
 /* Win32/GL adapter for the original option ring and passport.
    Included after font/ring helpers; all gameplay remains in the C runtime. */
+static GLuint ub_backdrop;
 static void frontend_free(void){
- if(title_visual){glDeleteTextures((GLsizei)(title_visual->tile_count*2+1),title_tiles);glDeleteTextures((GLsizei)title_visual->tile_count,title_font_tiles);}
+ glDeleteTextures(1,&ub_backdrop);ub_backdrop=0;
+ if(title_visual){glDeleteTextures((GLsizei)(title_visual->tile_count*2+2),title_tiles);glDeleteTextures((GLsizei)title_visual->tile_count,title_font_tiles);}
  free(title_tiles);free(title_font_tiles);tomb_visual_free(title_visual);tomb_level_free(title_level);glDeleteTextures(1,&title_backdrop);
 }
 static int frontend_assets(void){
@@ -16,8 +39,22 @@ static int frontend_assets(void){
  glGenTextures(1,&title_backdrop);glBindTexture(GL_TEXTURE_2D,title_backdrop);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);free(rgb);return 1;
 }
 static void frontend_backdrop(void){
- glEnable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);glBindTexture(GL_TEXTURE_2D,title_backdrop);glColor3f(1,1,1);
- glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2d((width-height*4.0/3)/2,0);glTexCoord2f(640.f/1024,0);glVertex2d((width+height*4.0/3)/2,0);glTexCoord2f(640.f/1024,480.f/512);glVertex2d((width+height*4.0/3)/2,height);glTexCoord2f(0,480.f/512);glVertex2d((width-height*4.0/3)/2,height);glEnd();glDisable(GL_TEXTURE_2D);
+ int ub=(new_game_menu==4?new_game_row==1:new_game_menu==5 && campaign_selected==CAMPAIGN_UB);
+ int combined=new_game_menu==4?new_game_row==CAMPAIGN_COMBINED:new_game_menu==5 && campaign_selected==CAMPAIGN_COMBINED;
+ if((ub || combined) && !ub_backdrop){
+  char path[MAX_PATH];ub_path(path,"DATA/TITLEH.PCX");unsigned char *rgb=tomb_picture_load(path);
+  if(rgb){glGenTextures(1,&ub_backdrop);glBindTexture(GL_TEXTURE_2D,ub_backdrop);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);free(rgb);}
+ }
+ glEnable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);glBindTexture(GL_TEXTURE_2D,ub && ub_backdrop?ub_backdrop:title_backdrop);glColor3f(1,1,1);
+ double left=(width-height*4.0/3)/2,right=(width+height*4.0/3)/2;
+ int split=combined && ub_backdrop;
+ for(int part=0;part<(split?2:1);part++){
+  double top=split?part*height/2.0:0,bottom=split?(part+1)*height/2.0:height;
+  float v=split?240.f/512:480.f/512;
+  if(split)glBindTexture(GL_TEXTURE_2D,part?ub_backdrop:title_backdrop);
+  glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2d(left,top);glTexCoord2f(640.f/1024,0);glVertex2d(right,top);glTexCoord2f(640.f/1024,v);glVertex2d(right,bottom);glTexCoord2f(0,v);glVertex2d(left,bottom);glEnd();
+ }
+ glDisable(GL_TEXTURE_2D);
 }
 static const char *frontend_name(int id){switch(id){case 71:case 81:return "Game";case 73:return title_mode?"Lara's Home":"Customisation";case 95:return "Detail Levels";case 96:return "Sound";case 97:return "Controls";default:return tomb_inventory_level_name(level_number,id);}}
 /* Title always offers Autosave; gameplay offers it only while enabled. */
@@ -30,6 +67,7 @@ static void refresh_slots(void){
  char path[MAX_PATH];FILETIME newest={0};int latest=0;
  for(int i=0;i<17;i++){
   save_path(path,i);save_levels[i]=tomb_save_level(path);
+  if(save_levels[i]>=LEVEL_CHOICE_COUNT || (save_levels[i]>=0 && campaign_selected!=CAMPAIGN_COMBINED && (save_levels[i]>=UB_FIRST_LEVEL)!=campaign_selected))save_levels[i]=-1;
   if(!slot_memory_ready && i<16 && save_levels[i]>=0){
    WIN32_FILE_ATTRIBUTE_DATA data;
    if(GetFileAttributesExA(path,GetFileExInfoStandard,&data) && CompareFileTime(&data.ftLastWriteTime,&newest)>0){newest=data.ftLastWriteTime;latest=i;}
@@ -73,9 +111,9 @@ static int frontend_source_apply(void){
  source_selected=source_pending;
  if(!frontend_assets()){
   frontend_free();title_level=old_level;title_visual=old_visual;title_tiles=old_tiles;title_font_tiles=old_font;title_backdrop=old_backdrop;
-  source_selected=source_pending=previous;music_pending=music_selected;fmv_pending=fmv_selected;strcpy(menu_error,"Could not load source");return 0;
+  source_selected=source_pending=previous;music_pending=music_selected;fmv_pending=fmv_selected;settings_preset=-1;strcpy(menu_error,"Could not load source");return 0;
  }
- if(old_visual){glDeleteTextures((GLsizei)(old_visual->tile_count*2+1),old_tiles);glDeleteTextures((GLsizei)old_visual->tile_count,old_font);}
+ if(old_visual){glDeleteTextures((GLsizei)(old_visual->tile_count*2+2),old_tiles);glDeleteTextures((GLsizei)old_visual->tile_count,old_font);}
  free(old_tiles);free(old_font);tomb_visual_free(old_visual);tomb_level_free(old_level);glDeleteTextures(1,&old_backdrop);
  audio_stop();music_selected=music_pending;fmv_selected=fmv_pending;slot_memory_ready=0;refresh_slots();return 1;
 }
@@ -92,7 +130,8 @@ typedef struct FrontendGameplayOption { const char *name; uint32_t bit; int acti
 static const char *customise_pages[]={"ENHANCEMENTS","CHEATS","FUN STUFF"};
 static const FrontendGameplayOption customise_quality[]={
  {"Saves",TOMB_SAVE_CRYSTALS,0},
- {"Autosave",TOMB_AUTOSAVE,0},{"Consistent Weapons",TOMB_CONSISTENT_WEAPONS,0},{"3D Pickups",TOMB_3D_PICKUPS,0}};
+ {"Autosave",TOMB_AUTOSAVE,0},{"Consistent Weapons",TOMB_CONSISTENT_WEAPONS,0},{"3D Pickups",TOMB_3D_PICKUPS,0},
+ {"Show Level Name",TOMB_SHOW_LEVEL_NAME,0},{"Skip Stats Screen",TOMB_SKIP_STATS,0}};
 static const FrontendGameplayOption customise_cheats_title[]={
  {"Invincibility",TOMB_INVINCIBLE,0},{"Infinite Ammo",TOMB_INFINITE_AMMO,0},{"Gun Power",0,-1},
  {"Start with Shotgun",TOMB_START_SHOTGUN,0},{"Start with Magnums",TOMB_START_MAGNUMS,0},{"Start with Uzis",TOMB_START_UZIS,0}};
@@ -101,9 +140,9 @@ static const FrontendGameplayOption customise_cheats_game[]={
  {"Give Pistol",0,1},{"Give Shotgun",0,2},{"Give Magnums",0,3},{"Give Uzis",0,4}};
 static const FrontendGameplayOption customise_fun[]={
  {"No Enemies",TOMB_NO_ENEMIES,0},{"Double-Tap Jump to Swim",TOMB_DOUBLE_JUMP_SWIM,0},
- {"Max Draw Distance",TOMB_MAX_DRAW_DISTANCE,0},{"Climb Anything in VR",TOMB_VR_CLIMB_ANYTHING,0}};
+ {"Climb Anything in VR",TOMB_VR_CLIMB_ANYTHING,0}};
 static const FrontendGameplayOption *frontend_gameplay_options(int starting,int *count){
- if(customise_page==0){*count=starting?4:3;return customise_quality+(starting?0:1);}
+ if(customise_page==0){*count=starting?6:5;return customise_quality+(starting?0:1);}
  if(customise_page==2){*count=4;return customise_fun;}
  *count=starting?6:8;return starting?customise_cheats_title:customise_cheats_game;
 }
@@ -121,7 +160,7 @@ static void frontend_gameplay_input(int starting,int *row,unsigned input){
   if(input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))customise_page=(customise_page+((input&TOMB_RING_RIGHT)?1:2))%3;
   return;
  }
- if(starting && *row==count){if(input&TOMB_RING_SELECT)new_game_menu=4;return;}
+ if(starting && *row==count){if(input&TOMB_RING_SELECT){new_game_menu=4;new_game_row=CAMPAIGN_TR;}return;}
  if(!(input&(TOMB_RING_SELECT|TOMB_RING_LEFT|TOMB_RING_RIGHT)))return;
  const FrontendGameplayOption *o=options+*row;uint32_t *bits=starting?&new_game_options:&play.gameplay_options;
  if(o->action==-1)frontend_gun_power(bits,input);
@@ -171,14 +210,29 @@ static int frontend_input(unsigned *input){
      if(new_game_row==TOMB_MODE_VR && !xr_open()){snprintf(menu_error,sizeof menu_error,"%.95s",xr.error);}
      else{new_game_mode=new_game_row;new_game_menu=2;new_game_row=0;menu_error[0]=0;}
     }
-    else if(new_game_menu==2){new_game_custom=new_game_row!=0;if(new_game_custom){new_game_menu=3;new_game_row=-1;customise_page=0;}else{new_game_options=0;new_game_menu=4;}}
+    else if(new_game_menu==2){new_game_custom=new_game_row!=0;if(new_game_custom){new_game_menu=3;new_game_row=-1;customise_page=0;}else{new_game_options=0;new_game_menu=4;new_game_row=CAMPAIGN_TR;}}
    }
    *input=0;return 0;
   }
   if(new_game_menu==4){
-   if(*input&16 && new_game_level>0)new_game_level--;
-   if(*input&32 && new_game_level<LEVEL_CHOICE_COUNT-1)new_game_level++;
-   if(*input&TOMB_RING_BACK){new_game_menu=new_game_custom?3:2;new_game_row=new_game_custom?-1:0;}
+   if(*input&16 && new_game_row>0)--new_game_row;
+   if(*input&32 && new_game_row<3)++new_game_row;
+   if(*input&TOMB_RING_BACK){new_game_menu=campaign_for_load?0:new_game_custom?3:2;new_game_row=new_game_custom?-1:0;campaign_for_load=0;menu_error[0]=0;}
+   else if((*input&TOMB_RING_SELECT) && new_game_row!=3){
+    if(new_game_row!=0 && !ub_available())strcpy(menu_error,"Unfinished Business is not installed");
+    else{campaign_selected=new_game_row;slot_memory_ready=0;refresh_slots();settings_write();menu_error[0]=0;
+     if(campaign_for_load){new_game_menu=0;campaign_for_load=0;frontend_open_slots(0);}
+     else{new_game_level=campaign_selected==CAMPAIGN_UB?UB_FIRST_LEVEL:1;new_game_menu=5;}
+    }
+   }
+   *input=0;return 0;
+  }
+  if(new_game_menu==5){
+   int index=campaign_level_index(new_game_level),count=campaign_level_count();
+   if(*input&16 && index>0)--index;
+   if(*input&32 && index<count-1)++index;
+   new_game_level=campaign_level_at(index);
+   if(*input&TOMB_RING_BACK){new_game_menu=4;new_game_row=CAMPAIGN_TR;}
    else if(*input&TOMB_RING_SELECT){new_game_menu=0;menu_action=2;tomb_ring_finish_item(r,71);}
    *input=0;return 0;
   }
@@ -190,14 +244,15 @@ static int frontend_input(unsigned *input){
    *input=0;return 0;
   }
   /* When there are no saves DOS skips the load page. */
-  int any=0;for(int n=0;n<frontend_slot_count(0);n++)if(save_levels[frontend_slot(0,n)]>=0)any=1;
+  int any=title_mode;for(int n=0;n<frontend_slot_count(0);n++)if(save_levels[frontend_slot(0,n)]>=0)any=1;
   if(page==0 && !any){i->goal=(death_menu || frontend_save_blocked())?24:19;i->direction=1;r->ready=0;*input=0;return 0;}
   int direction=(*input&TOMB_RING_RIGHT)?1:(*input&TOMB_RING_LEFT)?-1:0;
   if(direction){int next=page+direction;if(next>=(!any?1:0) && next<=2 && !((death_menu || frontend_save_blocked()) && next==1)){i->goal=(int16_t)(14+next*5);i->direction=(int16_t)direction;r->ready=0;r->sound=115;inventory_sound();}else if((death_menu || frontend_save_blocked()) && next==1){i->goal=(int16_t)(direction>0?24:14);i->direction=(int16_t)direction;r->ready=0;}*input=0;}
   else if(death_menu && (*input&TOMB_RING_BACK)){*input=0;}
   else if(*input&TOMB_RING_SELECT){
-   if(page==0 || (page==1 && !title_mode && (level_number!=0 || passport_save))){frontend_open_slots(page);}
-   else if(page==1 && (title_mode || (level_number==0 && !passport_save))){new_game_menu=1;new_game_row=0;new_game_options=0;new_game_custom=0;new_game_mode=0;new_game_level=1;menu_error[0]=0;}
+   if(page==0 && title_mode){campaign_for_load=1;new_game_menu=4;new_game_row=CAMPAIGN_TR;}
+   else if(page==0 || (page==1 && !title_mode && (level_number!=0 || passport_save))){frontend_open_slots(page);}
+   else if(page==1 && (title_mode || (level_number==0 && !passport_save))){campaign_for_load=0;new_game_menu=1;new_game_row=0;new_game_options=0;new_game_custom=0;new_game_mode=0;new_game_level=1;menu_error[0]=0;}
    else{menu_action=page+1;tomb_ring_finish_item(r,71);}*input=0;
   }
  }else if(i->object==73 && !title_mode){
@@ -208,7 +263,7 @@ static int frontend_input(unsigned *input){
   if(*input&TOMB_RING_SELECT){tomb_ring_finish_item(r,73);*input=0;}
  }
  else if(i->object>=95 && i->object<=97){
-  int rows=i->object==95?(title_mode?7:4):i->object==96?2:13;
+  int rows=i->object==95?(title_mode?11:7):i->object==96?2:13;
   if(i->object==95){if(*input&16 && option_row>0)option_row--;if(*input&32 && option_row<rows-1)option_row++;}
   else if(i->object==97){
    if(option_row<0){if(*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))controls_page=(controls_page+((*input&TOMB_RING_RIGHT)?1:3))%4;if(*input&32)option_row=0;}
@@ -223,13 +278,22 @@ static int frontend_input(unsigned *input){
   }else {if(*input&16 && option_row>0)option_row--;if(*input&32 && option_row<rows-1)option_row++;}
   if(i->object==95 && (*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))){
    int forward=(*input&TOMB_RING_RIGHT)!=0;
-   if(option_row==0)settings_detail=(settings_detail+(forward?2:1))%3;
-   else if(option_row==1)settings_framerate=(settings_framerate+(forward?1:2))%3;
-   else if(option_row==2)settings_vsync=!settings_vsync;
-   else if(option_row==3)settings_force43=!settings_force43;
-   else if(title_mode && option_row==4)source_pending=source_cycle(source_pending,forward?1:-1);
-   else if(title_mode && option_row==5)music_pending=source_cycle_mask(music_pending,forward?1:-1,music_available);
-   else if(title_mode && option_row==6)fmv_pending=source_cycle_mask(fmv_pending,forward?1:-1,fmv_available);
+   int row=option_row+(title_mode?0:1);
+   if(row==0){
+    settings_preset=settings_preset<0?0:(settings_preset+(forward?1:3))%4;
+    settings_apply_preset(settings_preset);
+    int level_preferred=settings_preset==3?0:1;
+    int media_preferred=settings_preset==0 || settings_preset==3?0:1;
+    source_pending=source_choose(source_available,level_preferred);
+    music_pending=source_choose_media(music_available,settings_preset==0?3:media_preferred);
+    fmv_pending=source_choose_media(fmv_available,media_preferred);
+   }else{
+    if(row>=1 && row<=7)frontend_detail_cycle(row,forward);
+    else if(row==8)source_pending=source_cycle(source_pending,forward?1:-1);
+    else if(row==9)music_pending=source_cycle_mask(music_pending,forward?1:-1,music_available);
+    else if(row==10)fmv_pending=source_cycle_mask(fmv_pending,forward?1:-1,fmv_available);
+    settings_preset=-1;
+   }
   }
   if(i->object==96){int *v=option_row?&settings_sound:&settings_music;if(*input&TOMB_RING_LEFT && *v>0)--*v;if(*input&TOMB_RING_RIGHT && *v<10)++*v;}
   if(i->object==97 && (*input&TOMB_RING_SELECT)){if(option_row<0 || controls_page==3){*input=0;return 0;}binding_wait=1;*input=0;return 0;}
@@ -249,18 +313,20 @@ static void frontend_inventory_backdrop(void){
  if(xr.panel_drawing)return;
  int cinema=objects.progress->complete && cinematic_pixels;
  const unsigned char *palette=cinema?cinematic_palette:visual->palette;
- static GLuint texture;static unsigned char *indices,*rgb,*original;static int w,h,pw,ph,shade=-1;
- int full_colour=visual->rgba_tiles!=NULL;
- if(w!=width || h!=height || backdrop_dirty){
-  free(indices);free(rgb);free(original);original=NULL;w=width;h=height;pw=ph=1;while(pw<w)pw*=2;while(ph<h)ph*=2;
+ static GLuint texture;static unsigned char *indices,*rgb,*original;static int w,h,pw,ph,shade=-1,last_full=-1;
+ int full_colour=settings_full_colour || visual->rgba_tiles!=NULL;
+ GLint viewport[4];glGetIntegerv(GL_VIEWPORT,viewport);
+ if(last_full!=full_colour){shade=-1;last_full=full_colour;}
+ if(w!=viewport[2] || h!=viewport[3] || backdrop_dirty){
+  free(indices);free(rgb);free(original);original=NULL;w=viewport[2];h=viewport[3];pw=ph=1;while(pw<w)pw*=2;while(ph<h)ph*=2;
   indices=malloc((size_t)w*h);rgb=calloc((size_t)pw*ph,3);unsigned char *pixels=malloc((size_t)w*h*3);
   if(!indices || !rgb || !pixels){free(pixels);return;}
   unsigned char lut[32768];
-  if(!full_colour)for(int key=0;key<32768;key++){int best=0,dist=INT_MAX;for(int i=0;i<256;i++){int d=0;for(int c=0;c<3;c++){int value=((key>>(10-c*5))&31)*255/31-palette[i*3+c]*255/63;d+=value*value;}if(d<dist){dist=d;best=i;}}lut[key]=(unsigned char)best;}
+  for(int key=0;key<32768;key++){int best=0,dist=INT_MAX;for(int i=0;i<256;i++){int d=0;for(int c=0;c<3;c++){int value=((key>>(10-c*5))&31)*255/31-palette[i*3+c]*255/63;d+=value*value;}if(d<dist){dist=d;best=i;}}lut[key]=(unsigned char)best;}
   glPixelStorei(GL_PACK_ALIGNMENT,1);if(cinema){for(int y=0;y<h;y++)for(int x=0;x<w;x++)memcpy(pixels+((size_t)y*w+x)*3,cinematic_pixels+((size_t)(y*cinematic_height/h)*cinematic_width+x*cinematic_width/w)*3,3);}
   else glReadPixels(0,0,w,h,GL_RGB,GL_UNSIGNED_BYTE,pixels);
-  if(full_colour)original=pixels;
-  else {for(size_t n=0;n<(size_t)w*h;n++)indices[n]=lut[((pixels[n*3]>>3)<<10)|((pixels[n*3+1]>>3)<<5)|(pixels[n*3+2]>>3)];free(pixels);}
+  original=pixels;
+  for(size_t n=0;n<(size_t)w*h;n++)indices[n]=lut[((pixels[n*3]>>3)<<10)|((pixels[n*3+1]>>3)<<5)|(pixels[n*3+2]>>3)];
   if(!texture)glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
   glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,pw,ph,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);shade=-1;backdrop_dirty=0;
  }
@@ -272,37 +338,42 @@ static void frontend_inventory_backdrop(void){
   else for(int y=0;y<h;y++)for(int x=0;x<w;x++){int index=indices[y*w+x];if(row!=16)index=frontend_dark_index(palette,light,index);for(int c=0;c<3;c++)rgb[((size_t)y*pw+x)*3+c]=(unsigned char)(palette[index*3+c]*255/63);}
   glPixelStorei(GL_UNPACK_ALIGNMENT,1);glTexSubImage2D(GL_TEXTURE_2D,0,0,0,pw,ph,GL_RGB,GL_UNSIGNED_BYTE,rgb);shade=row;
  }
- glColor3f(1,1,1);glBegin(GL_QUADS);glTexCoord2f(0,(float)h/ph);glVertex2i(0,0);glTexCoord2f((float)w/pw,(float)h/ph);glVertex2i(w,0);glTexCoord2f((float)w/pw,0);glVertex2i(w,h);glTexCoord2f(0,0);glVertex2i(0,h);glEnd();glDisable(GL_TEXTURE_2D);
+ glColor3f(1,1,1);glBegin(GL_QUADS);glTexCoord2f(0,(float)h/ph);glVertex2i(0,0);glTexCoord2f((float)w/pw,(float)h/ph);glVertex2i(width,0);glTexCoord2f((float)w/pw,0);glVertex2i(width,height);glTexCoord2f(0,0);glVertex2i(0,height);glEnd();glDisable(GL_TEXTURE_2D);
 }
 /* DOS translucent panels use light-map row 24 (1fa5c), not an opaque fill.
    Quantize the small RGB panel region to the supplied palette for that lookup. */
 static void frontend_panel_shade(int x,int y,int w,int h) {
  static unsigned char lut[32768],palette[768];static int valid;static GLuint texture;
- if(!visual->rgba_tiles && (!valid || memcmp(palette,visual->palette,sizeof palette))) {
+ if(!settings_full_colour && !visual->rgba_tiles && (!valid || memcmp(palette,visual->palette,sizeof palette))) {
   memcpy(palette,visual->palette,sizeof palette);valid=1;
   for(int key=0;key<32768;key++){int best=0,dist=INT_MAX;for(int n=0;n<256;n++){int d=0;for(int c=0;c<3;c++){int delta=((key>>(10-5*c))&31)*255/31-palette[3*n+c]*255/63;d+=delta*delta;}if(d<dist){dist=d;best=n;}}lut[key]=(unsigned char)best;}
  }
  if(x<0){w+=x;x=0;}if(y<0){h+=y;y=0;}if(x+w>width)w=width-x;if(y+h>height)h=height-y;if(w<=0 || h<=0)return;
+ int logical_x=x,logical_y=y,logical_w=w,logical_h=h;
+ GLint viewport[4];glGetIntegerv(GL_VIEWPORT,viewport);
+ int right=(int)ceil((double)(x+w)*viewport[2]/width),bottom=(int)ceil((double)(y+h)*viewport[3]/height);
+ x=(int)((int64_t)x*viewport[2]/width);y=(int)((int64_t)y*viewport[3]/height);w=right-x;h=bottom-y;
+ if(w<=0 || h<=0)return;
  int pw=1,ph=1;while(pw<w)pw*=2;while(ph<h)ph*=2;
  unsigned char *pixels=malloc((size_t)w*h*3),*rgb=calloc((size_t)pw*ph,3);if(!pixels || !rgb){free(pixels);free(rgb);return;}
  /* The caller selects the read buffer: GL_BACK on desktop, COLOR_ATTACHMENT0
     for an OpenXR panel. GL_BACK is invalid on a bound headset framebuffer. */
- glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(x,height-y-h,w,h,GL_RGB,GL_UNSIGNED_BYTE,pixels);
+ glPixelStorei(GL_PACK_ALIGNMENT,1);glReadPixels(viewport[0]+x,viewport[1]+viewport[3]-y-h,w,h,GL_RGB,GL_UNSIGNED_BYTE,pixels);
  const TombLevel *panel_level=visual->level;
  const unsigned char *light=panel_level->file_data+panel_level->item_parsed_bytes+24*256;
- if(visual->rgba_tiles){for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++)for(int c=0;c<3;c++)rgb[((size_t)yy*pw+xx)*3+c]=pixels[((size_t)yy*w+xx)*3+c]/2;}
+ if(settings_full_colour || visual->rgba_tiles){for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++)for(int c=0;c<3;c++)rgb[((size_t)yy*pw+xx)*3+c]=pixels[((size_t)yy*w+xx)*3+c]/2;}
  else for(int yy=0;yy<h;yy++)for(int xx=0;xx<w;xx++){const unsigned char *p=pixels+((size_t)yy*w+xx)*3;int index=frontend_dark_index(palette,light,lut[((p[0]>>3)<<10)|((p[1]>>3)<<5)|(p[2]>>3)]);for(int c=0;c<3;c++)rgb[((size_t)yy*pw+xx)*3+c]=(unsigned char)(palette[index*3+c]*255/63);}
  if(!texture)glGenTextures(1,&texture);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,texture);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
  glPixelStorei(GL_UNPACK_ALIGNMENT,1);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,pw,ph,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);glColor3f(1,1,1);
- glBegin(GL_QUADS);glTexCoord2f(0,(float)h/ph);glVertex2i(x,y);glTexCoord2f((float)w/pw,(float)h/ph);glVertex2i(x+w,y);glTexCoord2f((float)w/pw,0);glVertex2i(x+w,y+h);glTexCoord2f(0,0);glVertex2i(x,y+h);glEnd();glDisable(GL_TEXTURE_2D);free(pixels);free(rgb);
+ glBegin(GL_QUADS);glTexCoord2f(0,(float)h/ph);glVertex2i(logical_x,logical_y);glTexCoord2f((float)w/pw,(float)h/ph);glVertex2i(logical_x+logical_w,logical_y);glTexCoord2f((float)w/pw,0);glVertex2i(logical_x+logical_w,logical_y+logical_h);glTexCoord2f(0,0);glVertex2i(logical_x,logical_y+logical_h);glEnd();glDisable(GL_TEXTURE_2D);free(pixels);free(rgb);
 }
 static void frontend_edge(double x,double y,double w,double h,int index) {
- double scale=fmax(.5,fmin(width/640.0,height/480.0));
+ double scale=ui_scale();
  colour((unsigned)index,1);glBegin(GL_QUADS);glVertex2d(x,y);glVertex2d(x+w*scale,y);glVertex2d(x+w*scale,y+h*scale);glVertex2d(x,y+h*scale);glEnd();
 }
 static void frontend_panel(const TombDialogEntry *entry,const char *text) {
  TombTextStyle style={0,0,65536,65536,1,6,0};int bounds[4];tomb_dialog_bounds(entry,tomb_text_width(text,&style),bounds);
- double scale=fmax(.5,fmin(width/640.0,height/480.0)),x=(width-640*scale)/2+bounds[0]*scale;
+ double scale=ui_scale(),x=(width-640*scale)/2+bounds[0]*scale;
  double y=(entry->flags&TOMB_TEXT_BOTTOM)?height-480*scale+bounds[1]*scale:(height-480*scale)/2+bounds[1]*scale;
  int w=bounds[2],h=bounds[3];frontend_panel_shade((int)x,(int)y,(int)(w*scale),(int)(h*scale));
  /* Eight one-pixel bevel lines, palette 15/31, from DOS 1f938. */
@@ -314,12 +385,12 @@ static void frontend_panel(const TombDialogEntry *entry,const char *text) {
 static void frontend_entry(const TombDialogEntry *entry,const char *text,int selected) {
  if(entry->panel_width || selected)frontend_panel(entry,text);
  if(entry->flags&TOMB_TEXT_CENTRE)ui_text(entry->x,entry->y,text,(unsigned)entry->flags);
- else {double scale=fmax(.5,fmin(width/640.0,height/480.0));text_aligned((float)((width-640*scale)/2+entry->x*scale),(float)(entry->y*scale),text,(unsigned)entry->flags);}
+ else {double scale=ui_scale();text_aligned((float)((width-640*scale)/2+entry->x*scale),(float)(entry->y*scale),text,(unsigned)entry->flags);}
 }
 /* Use the original font's horizontal arrows around the mode selector. */
 static void frontend_control_mode(const TombDialogEntry *entry,const char *name,int selected) {
  frontend_entry(entry,name,selected);
- double scale=fmax(.5,fmin(width/640.0,height/480.0));
+ double scale=ui_scale();
  TombTextStyle style={0,0,(int32_t)(scale*65536),(int32_t)(scale*65536),1,6,0};
  int span=tomb_text_width(name,&style),left=(width-span)/2+(int)(entry->x*scale);
  int y=height/2+(int)(entry->y*scale);
@@ -377,12 +448,20 @@ static void frontend_overlay(void){
    }if(menu_error[0])ui_text(0,-40,menu_error,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);return;
   }
   if(new_game_menu==4){
-   int first=new_game_level>=10?new_game_level-9:0;
-   tomb_dialog_layout(71,new_game_level-first,1,entries);
+   static const char *names[]={"Tomb Raider","Unfinished Business","Combined","Custom"};
+   tomb_dialog_layout(71,new_game_row,1,entries);entries[0].panel_height=112;
+   frontend_entry(entries," ",0);frontend_entry(entries+1,"Select Campaign",0);
+   for(int row=0;row<4;row++)frontend_entry(entries+row+2,names[row],0);
+   if(menu_error[0])ui_text(0,-40,menu_error,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);return;
+  }
+  if(new_game_menu==5){
+   int index=campaign_level_index(new_game_level),end=campaign_level_count();
+   int first=index>=10?index-9:0;
+   tomb_dialog_layout(71,index-first,1,entries);
    frontend_entry(entries," ",0);frontend_entry(entries+1,"Choose Starting Level",0);
-   for(int row=0;row<10 && first+row<LEVEL_CHOICE_COUNT;row++)frontend_entry(entries+row+2,level_choices[first+row].name,0);
+   for(int row=0;row<10 && first+row<end;row++)frontend_entry(entries+row+2,level_choices[campaign_level_at(first+row)].name,0);
    if(first>0)ui_text(0,-282,"[",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
-   if(first+10<LEVEL_CHOICE_COUNT)ui_text(0,-88,"]",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
+   if(first+10<end)ui_text(0,-88,"]",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
    return;
   }
   int page=(i->frame-14)/5;
@@ -392,20 +471,39 @@ static void frontend_overlay(void){
   if(!slot_menu)frontend_entry(entries,label,0);
   else {
    frontend_entry(entries," ",0);frontend_entry(entries+1,label,0);
-   for(int row=0;row<10 && first+row<frontend_slot_count(page);row++){int n=frontend_slot(page,first+row);char line[96];if(n==16)snprintf(line,sizeof line,"Autosave - %s",save_levels[n]>=0?level_choices[save_levels[n]].name:"Empty Slot");else snprintf(line,sizeof line,"%02d %s",n+1,save_levels[n]>=0?level_choices[save_levels[n]].name:"Empty Slot");frontend_entry(entries+row+2,line,0);}
+   for(int row=0;row<10 && first+row<frontend_slot_count(page);row++){int n=frontend_slot(page,first+row);char line[96];if(n==16)snprintf(line,sizeof line,"Autosave - %s",save_levels[n]>=0?level_choices[save_levels[n]].name:"Empty Slot");else if(save_levels[n]>=0)snprintf(line,sizeof line,"%s",level_choices[save_levels[n]].name);else snprintf(line,sizeof line,"- EMPTY SLOT %d -",n+1);frontend_entry(entries+row+2,line,0);}
    if(first>0)ui_text(0,-282,"[",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
    if(first+10<frontend_slot_count(page))ui_text(0,-88,"]",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
   }
  }else if(i->object==95 || i->object==96){
-  int detail=i->object==95,rows=detail?(title_mode?7:4):2;
+  int detail=i->object==95,rows=detail?(title_mode?11:7):2;
   tomb_dialog_layout(i->object,option_row,0,entries);
-  if(detail){entries[0].panel_height=title_mode?252:132;entries[5]=entries[4];entries[5].y=75;entries[5].panel_width=option_row==3?288:0;entries[0].panel_width=300;entries[1].panel_width=296;for(int row=0;row<3;row++)if(entries[row+2].panel_width)entries[row+2].panel_width=288;}
-  if(detail && title_mode){
-   entries[0].panel_width=460;entries[1].panel_width=456;entries[0].y=-112;entries[1].y=-110;
-   for(int row=0;row<7;row++){entries[row+2]=entries[2];entries[row+2].y=-80+30*row;entries[row+2].panel_width=option_row==row?448:0;}
+  if(detail){
+   int top=title_mode?-185:-127,spacing=26;
+   entries[0].panel_width=460;entries[0].panel_height=42+spacing*rows;
+   entries[1].panel_width=456;entries[0].y=top;entries[1].y=top+2;
+   for(int row=0;row<rows;row++){entries[row+2]=entries[2];entries[row+2].y=top+32+spacing*row;entries[row+2].panel_width=option_row==row?448:0;}
   }
   frontend_entry(entries," ",0);frontend_entry(entries+1,detail?"Detail Levels":"Set Volumes",0);
-  for(int row=0;row<rows;row++){char line[80];if(detail && row>=4)snprintf(line,sizeof line,"%s: %s",row==4?"Level Source":row==5?"Music and Speech Source":"FMV Source",(row==4?source_available:row==5?music_available:fmv_available)?source_names[row==4?source_pending:row==5?music_pending:fmv_pending]:"Unavailable");else if(detail)snprintf(line,sizeof line,"%s: %s",row==0?"Detail":row==1?"Framerate Limit":row==2?"VSync":"Force 4:3",row==0?(settings_detail==2?"High":settings_detail==1?"Medium":"Low"):row==1?(settings_framerate==0?"None":settings_framerate==1?"60":"30"):((row==2?settings_vsync:settings_force43)?"On":"Off"));else snprintf(line,sizeof line,"%c %2d",row==0?'|':'}',row==0?settings_music:settings_sound);frontend_entry(entries+row+2,line,0);}
+  for(int row=0;row<rows;row++){
+   char line[96];int setting=row+(title_mode?0:1);
+   if(!detail)snprintf(line,sizeof line,"%c %2d",row==0?'|':'}',row==0?settings_music:settings_sound);
+   else {
+    static const char *labels[]={"Preset","Resolution","Force 4:3","Framerate Limit","Colour Depth","Texture Filtering","Draw Distance","Water Style","Level Source","Music and Speech Source","FMV Source"};
+    const char *value="";
+    if(setting==0)value=settings_preset<0?"Custom":preset_names[settings_preset];
+    else if(setting==1)value=settings_detail==2?"Full":settings_detail==1?"DOS High":settings_detail==3?"PS1":"DOS Low";
+    else if(setting==2)value=settings_force43?"On":"Off";
+    else if(setting==3)value=settings_framerate==0?"Off":settings_framerate==1?"60":"30";
+    else if(setting==4)value=settings_full_colour?"Full Colour":"256 Colours";
+    else if(setting==5)value=settings_texture_filtering?"On":"Off";
+    else if(setting==6)value=draw_distance_names[settings_draw_distance];
+    else if(setting==7)value=visual_style_names[settings_water_style];
+    else {unsigned available=setting==8?source_available:setting==9?music_available:fmv_available;value=setting==9 && music_pending==3?"PS1+DOS":available?source_names[setting==8?source_pending:setting==9?music_pending:fmv_pending]:"Unavailable";}
+    snprintf(line,sizeof line,"%s: %s",labels[setting],value);
+   }
+   frontend_entry(entries+row+2,line,0);
+  }
  }else if(i->object==97){
   /* Preserve user bindings; DOS puts Look before Roll in its right column. */
   tomb_dialog_layout(97,option_row,0,entries);

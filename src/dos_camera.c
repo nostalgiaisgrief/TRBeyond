@@ -148,6 +148,8 @@ int tomb_dos_camera_move_effects(TombDosCamera *c,const TombLevel *l,TombCameraP
     if(!heights(l,&displayed,0,&h))return 0;c->eye.room=displayed.room;return 1;
 }
 int tomb_dos_camera_tick_effects(TombDosCamera *c,const TombLevel *l,const TombActor *a,const int16_t b[6],const int16_t *s,const TombCameraRequest *r,int *bounce,uint32_t *random) {
+    int snap=(r->flags&TOMB_CAMERA_SNAP)!=0;
+    TombCameraRequest request=*r;request.flags&=~TOMB_CAMERA_SNAP;r=&request;
     if(!c->ready){c->target=(TombCameraPoint){a->x,a->y-1024,a->z,a->room};c->eye=c->target;c->eye.z-=100;c->shift=0;c->fixed=0;c->distance_squared=1536*1536;c->ready=1;}
     if(r->flags==TOMB_CAMERA_LOOK) {
         int speed=c->fixed?1:4;int32_t old_x=c->target.x,old_z=c->target.z;
@@ -183,7 +185,7 @@ int tomb_dos_camera_tick_effects(TombDosCamera *c,const TombLevel *l,const TombA
     c->target.x=a->x;c->target.z=a->z;c->target.room=a->room;
     if(r->flags==1){int centre=(b[4]+b[5])/2;c->target.x+=tomb_asr(mul(centre,sn(s,a->yaw)),14);c->target.z+=tomb_asr(mul(centre,sn(s,a->yaw+16384)),14);}
     int transition=c->fixed!=item,speed=transition?1:r->speed;
-    c->target.y=transition?y:c->target.y+(y-c->target.y)/4;
+    c->target.y=transition || snap?y:c->target.y+(y-c->target.y)/4;
     TombHeights h;int heavy=r->flags==2?0:1;
     if(!heights(l,&c->target,heavy,&h))return 0;if(h.floor<c->target.y)heavy=0;
     TombCameraPoint ideal;
@@ -198,7 +200,7 @@ int tomb_dos_camera_tick_effects(TombDosCamera *c,const TombLevel *l,const TombA
         if(!tomb_dos_camera_adjust(l,&c->target,&ideal,c->distance_squared,heavy))return 0;
         if(!transition)speed=12;
     }
-    if(!tomb_dos_camera_move_effects(c,l,ideal,speed,bounce,random))return 0;c->fixed=item;return 1;
+    if(!tomb_dos_camera_move_effects(c,l,ideal,snap?1:speed,bounce,random))return 0;c->fixed=item;return 1;
 }
 
 int tomb_dos_camera_move(TombDosCamera *c,const TombLevel *l,TombCameraPoint ideal,int speed){return tomb_dos_camera_move_effects(c,l,ideal,speed,NULL,NULL);}

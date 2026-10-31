@@ -233,7 +233,7 @@ static int vr_render(void){
     if(inventory_open || title_mode || paused || objects.progress->complete){
         vr_panel_place();
         XrTarget *t=xr.target+2;
-        if(xr_target_begin(2)){width=t->width;height=t->height;glViewport(0,0,width,height);glClearColor(0,0,0,vr_hand_ring()?0:1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);glClearColor(0,0,0,1);xr.panel_drawing=1;overlay();xr.panel_drawing=0;panel=1;vr_mirror_copy(&vr_mirror_panel,width,height);}
+        if(xr_target_begin(2)){width=t->width;height=t->height;glViewport(0,0,width,height);glClearColor(0,0,0,vr_hand_ring()?0:1);xr.panel_drawing=1;if(!draw_frame_composite(2))ok=0;xr.panel_drawing=0;glClearColor(0,0,0,1);panel=1;vr_mirror_copy(&vr_mirror_panel,width,height);}
         else ok=0;
         xr_target_end(2);
     }else xr.panel_open=0;

@@ -48,6 +48,8 @@ TOMB_EXPORT int tomb_visual_bounds(const TombVisual *,const TombActor *,int16_t 
 TOMB_EXPORT int tomb_visual_item_bounds(const TombVisual *,int object,const TombActor *,int16_t out[6]);
 /* DOS presentation effects, independent of the simulation and render backend. */
 TOMB_EXPORT unsigned tomb_visual_texture(const TombVisual *,unsigned,uint32_t ticks);
+/* Horizontal cutout faces on a wet/dry room portal, not arbitrary fences. */
+TOMB_EXPORT int tomb_visual_water_face(const TombVisual *,size_t room,const unsigned char *face,int vertices);
 typedef struct TombWaterEffect { int32_t wave[32],light[32],phase[32]; } TombWaterEffect;
 TOMB_EXPORT void tomb_water_effect_init(TombWaterEffect *,const int16_t *,uint32_t seed);
 TOMB_EXPORT int tomb_water_effect_shade(const TombWaterEffect *,unsigned vertex_remaining,uint32_t ticks,int shade);

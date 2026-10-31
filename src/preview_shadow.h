@@ -57,7 +57,7 @@ static void draw_shadow(const TombActor *actor,int object,int size,size_t track)
     if(pw!=shadow_width || ph!=shadow_height){glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,pw,ph,0,GL_RGB,GL_UNSIGNED_BYTE,NULL);shadow_width=pw;shadow_height=ph;}
     glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
     glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,0,0,width,height);
-    light_UseProgram(shade_program);light_Uniform1i(shade_material,visual->rgba_tiles?-5:-3);light_Uniform1i(shade_warp,0);light_Uniform2f(shade_screen,(float)pw,(float)ph);
+    light_UseProgram(shade_program);lighting_options(0);light_Uniform1i(shade_material,(settings_full_colour || settings_texture_filtering || visual->rgba_tiles || settings_water_style!=1)?-5:-3);light_Uniform1i(shade_warp,0);light_Uniform2f(shade_screen,(float)pw,(float)ph);
     light_ActiveTexture(0x84c1);glBindTexture(GL_TEXTURE_2D,shadow_textures[1]);light_ActiveTexture(0x84c0);
     glDisable(GL_ALPHA_TEST);glDisable(GL_CULL_FACE);glDepthMask(GL_FALSE);glEnable(GL_POLYGON_OFFSET_FILL);glPolygonOffset(-1,-1);
     glPushMatrix();glTranslatef((float)anchor.x,(float)h.floor,(float)anchor.z);glRotatef(actor->yaw*(360.f/65536.f),0,1,0);

@@ -252,7 +252,8 @@ static int fps_collision(TombPlaytest *p,TombActor *a,TombContact *c){
         }
         if(facing){query(p,a,c,762);if(p->blocked)return 0;}
     }
-    if(!airborne && (p->movement.input&64) && vault(p,a,c))return 1;
+    /* FPS reaches ledges through jumping and auto-grab; grounded Action is
+       reserved for object interactions, not Original-mode vaulting. */
     int type=c->type,ceiling_hit=c->shift_y>0;int32_t floor=c->floor;
     fps_shift(p,a,c);
     if(type==32){a->x=c->old_x;a->y=c->old_y;a->z=c->old_z;a->speed=0;if(a->fall_speed<0)a->fall_speed=0;return 1;}
@@ -645,7 +646,7 @@ static int playtest_tick(TombPlaytest *p,uint32_t input) {
 }
 
 void tomb_gameplay_start(TombPlaytest *p,uint32_t options){
-    p->gameplay_options=options&(2047|TOMB_GUN_POWER_MASK|TOMB_3D_PICKUPS|TOMB_SAVE_CRYSTALS);
+    p->gameplay_options=options&(2047|TOMB_GUN_POWER_MASK|TOMB_3D_PICKUPS|TOMB_SAVE_CRYSTALS|TOMB_SHOW_LEVEL_NAME|TOMB_SKIP_STATS);
     for(int j=0;j<3;j++)if(options&(4u<<j))tomb_inventory_add(&p->inventory,85+j);
     if(p->objects)p->objects->invincible=(options&TOMB_INVINCIBLE)!=0;
     if(p->objects && !tomb_enemies_configure(p->objects,(options&TOMB_NO_ENEMIES)!=0)){p->blocked=1;p->status="Enemy removal service unavailable";}

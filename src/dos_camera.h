@@ -8,6 +8,7 @@ typedef struct TombDosCamera {
     int32_t distance_squared; /* DOS retains the last chase radius in combat. */
 } TombDosCamera;
 #define TOMB_CAMERA_LOOK 512
+#define TOMB_CAMERA_SNAP 1024 /* Initial chase placement without the DOS pull-back. */
 #define TOMB_CAMERA_COMBAT 256 /* Request tag; not a DOS camera.flags value. */
 typedef struct TombCameraRequest {
     int32_t distance,flags,speed;
