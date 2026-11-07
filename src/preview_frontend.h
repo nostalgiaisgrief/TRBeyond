@@ -179,6 +179,23 @@ static void frontend_gameplay_input(int starting,int *row,unsigned input){
  }
 }
 static const int frontend_binding_order[13]={0,1,2,3,4,5,6,7,8,9,11,10,12};
+static int controls_binding_offset(void){return controls_page==1?2:1;}
+static int controls_key_index(void){return controls_page?option_row-controls_binding_offset():frontend_binding_order[option_row-1];}
+static int controls_count(void){return controls_page==3?1:(controls_page==1)+(pad_profiles[controls_page].enabled?1+pad_counts[controls_page]+(controls_page?5:1):1+(controls_page==2?10:controls_page?9:13));}
+static int controls_aim_row(void){return controls_page==1 && option_row==1;}
+static void controls_adjust(int direction){
+ if(controls_page==3)return;
+ PadProfile *p=pad_profiles+controls_page;
+ if(controls_aim_row()){tps_aim_methods[p->enabled]=!tps_aim_methods[p->enabled];return;}
+ if(option_row==0){p->enabled=!p->enabled;pad_blocked|=pad_buttons;pad_stick_blocked=1;memset(held_keys,0,sizeof held_keys);draw_requested=0;return;}
+ if(!p->enabled || option_row<pad_counts[controls_page]+controls_binding_offset())return;
+ int row=option_row-pad_counts[controls_page]-controls_binding_offset();
+ if(row==0)p->vibration=!p->vibration;
+ if(row==1){p->sensitivity+=direction*5;if(p->sensitivity<1)p->sensitivity=1;if(p->sensitivity>100)p->sensitivity=100;}
+ if(row==2)p->invert=!p->invert;
+ if(row==3 || row==4){int *v=row==3?&p->move_deadzone:&p->look_deadzone;*v+=direction;if(*v<0)*v=0;if(*v>50)*v=50;}
+ if(!p->vibration)pad_silence();
+}
 static int frontend_input(unsigned *input){
  TombRing *r=&inventory_ring;TombRingItem *i=r->items+r->current;
  if(passport_shortcut){
@@ -268,13 +285,8 @@ static int frontend_input(unsigned *input){
   else if(i->object==97){
    if(option_row<0){if(*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))controls_page=(controls_page+((*input&TOMB_RING_RIGHT)?1:3))%4;if(*input&32)option_row=0;}
    else if(controls_page==3){if(*input&16)--option_row;if(*input&TOMB_RING_LEFT && settings_vr_deadzone>0)--settings_vr_deadzone;if(*input&TOMB_RING_RIGHT && settings_vr_deadzone<50)++settings_vr_deadzone;}
-   else if(controls_page){if(*input&16)--option_row;if((*input&32) && option_row<(controls_page==2?9:8))++option_row;}
-   else {
-    int row=0;while(row<12 && frontend_binding_order[row]!=option_row)row++;
-    if(*input&16)--row;if((*input&32) && row<12)++row;
-    if(row>=0 && (*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT)))row=row<7?(row==6?12:row+7):(row==12?6:row-7);
-    option_row=row<0?-1:frontend_binding_order[row];
-   }
+   else {if(*input&16)--option_row;if((*input&32) && option_row<controls_count()-1)++option_row;
+    if(*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))controls_adjust((*input&TOMB_RING_RIGHT)?1:-1);}
   }else {if(*input&16 && option_row>0)option_row--;if(*input&32 && option_row<rows-1)option_row++;}
   if(i->object==95 && (*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))){
    int forward=(*input&TOMB_RING_RIGHT)!=0;
@@ -296,7 +308,12 @@ static int frontend_input(unsigned *input){
    }
   }
   if(i->object==96){int *v=option_row?&settings_sound:&settings_music;if(*input&TOMB_RING_LEFT && *v>0)--*v;if(*input&TOMB_RING_RIGHT && *v<10)++*v;}
-  if(i->object==97 && (*input&TOMB_RING_SELECT)){if(option_row<0 || controls_page==3){*input=0;return 0;}binding_wait=1;*input=0;return 0;}
+  if(i->object==97 && (*input&TOMB_RING_SELECT)){
+   if(option_row>=0 && controls_page<3){
+    if(option_row==0 || controls_aim_row() || (pad_profiles[controls_page].enabled && option_row>=pad_counts[controls_page]+controls_binding_offset()))controls_adjust(1);
+    else {binding_wait=1;pad_wait=pad_profiles[controls_page].enabled;pad_blocked|=pad_buttons;}
+   }*input=0;return 0;
+  }
   if(*input&(TOMB_RING_SELECT|TOMB_RING_BACK)){if(title_mode && i->object==95)frontend_source_apply();settings_write();tomb_ring_finish_item(r,-1);option_row=0;}
   *input=0;
  }
@@ -512,16 +529,32 @@ static void frontend_overlay(void){
    frontend_entry(entries," ",0);frontend_control_mode(entries+1,"Virtual Reality",option_row<0);
    TombDialogEntry label={170,-12,TOMB_TEXT_MIDDLE,0,0},value={365,-12,TOMB_TEXT_MIDDLE,0,0};char text[32];snprintf(text,sizeof text,"%d percent",settings_vr_deadzone);
    frontend_entry(&label,"Joystick deadzone",option_row==0);frontend_entry(&value,text,option_row==0);
-  }else if(controls_page){
-   entries[0].y=-100;entries[0].panel_height=230;entries[1].y=-85;
-   frontend_entry(entries," ",0);frontend_control_mode(entries+1,controls_page==2?"First Person Shooter":"Third Person Shooter",option_row<0);
-   for(int row=0;row<(controls_page==2?10:9);row++){
-    TombDialogEntry label={170,-57+18*row,TOMB_TEXT_MIDDLE,0,0},value={365,-57+18*row,TOMB_TEXT_MIDDLE,0,0};char key[40];frontend_key_name(control_bindings()[row],key);
-    frontend_entry(&label,(controls_page==2?fps_binding_names:shooter_binding_names)[row],row==option_row && !binding_wait);frontend_entry(&value,binding_wait && row==option_row?"?":key,row==option_row && binding_wait);
-   }
   }else {
-   frontend_entry(entries," ",0);frontend_control_mode(entries+1,"Original",option_row<0);
-   for(int row=0;row<13;row++){int b=frontend_binding_order[row];char key[40];frontend_key_name(bindings[b],key);frontend_entry(entries+2+row,binding_names[b],b==option_row && !binding_wait);frontend_entry(entries+15+row,binding_wait && b==option_row?"?":key,b==option_row && binding_wait);}
+   PadProfile *p=pad_profiles+controls_page;int count=controls_count(),first=option_row>10?option_row-10:0;
+   entries[0].y=-130;entries[0].panel_height=290;entries[1].y=-115;
+   frontend_entry(entries," ",0);frontend_control_mode(entries+1,controls_page==2?"First Person Shooter":controls_page?"Third Person Shooter":"Original",option_row<0);
+   for(int row=first;row<count && row<first+11;row++){
+    TombDialogEntry label={150,-87+19*(row-first),TOMB_TEXT_MIDDLE,0,0},value={370,-87+19*(row-first),TOMB_TEXT_MIDDLE,0,0};
+    const char *name;char text[40];int binding_row=row-(controls_page==1);
+    if(row==0){name="Controller";snprintf(text,sizeof text,"%s",p->enabled?"Gamepad":controls_page?"Keyboard and Mouse":"Keyboard");}
+    else if(controls_page==1 && row==1){name="Aim Method";snprintf(text,sizeof text,"%s",tps_aim_methods[p->enabled]?"Lock On":"Free Aim");}
+    else if(!p->enabled){int b=controls_page?binding_row-1:frontend_binding_order[row-1];name=(controls_page==2?fps_binding_names:controls_page?shooter_binding_names:binding_names)[b];frontend_key_name(control_bindings()[b],text);}
+    else if(binding_row<=pad_counts[controls_page]){
+     int a=pad_rows[controls_page][binding_row-1];name=pad_names[a];
+     if(controls_page==TOMB_MODE_SHOOTER){
+      if(a==PAD_SHOOT)name="Action";
+      if(a==PAD_ACTION)name="Action Alt";
+     }
+     pad_label(p->binding[a],text);
+    }
+    else {int n=binding_row-pad_counts[controls_page]-1;static const char *names[]={"Vibration","Look Sensitivity","Invert Vertical Look","Movement Deadzone","Look Deadzone"};name=names[n];
+     if(n==0 || n==2)snprintf(text,sizeof text,"%s",(n==0?p->vibration:p->invert)?"On":"Off");
+     else snprintf(text,sizeof text,"%d",n==1?p->sensitivity:n==3?p->move_deadzone:p->look_deadzone);
+    }
+    frontend_entry(&label,name,row==option_row && !binding_wait);frontend_entry(&value,binding_wait && row==option_row?"?":text,row==option_row);
+   }
+   TombDialogEntry hint={0,137,TOMB_TEXT_MIDDLE|TOMB_TEXT_CENTRE,0,0};
+   frontend_entry(&hint,binding_wait?"Press a control - Escape cancels":first+11<count?"Down for more options":first?"Up for more options":" ",0);
   }
  }
  if(menu_error[0])ui_text(0,-45,menu_error,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);

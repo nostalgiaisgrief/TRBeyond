@@ -84,7 +84,7 @@ def install(selected,destination,payload,progress,cancel):
                 records.append(dict(path=file.relative_to(source).as_posix(),bytes=file.stat().st_size,sha256=digest))
         (source/'import-manifest.json').write_text(json.dumps(dict(format=2,asset_format=1,converter=1,edition='PS1',input_kind='cue',files=records),indent=2))
         (stage/'trb-install.json').write_text(json.dumps(dict(format=2,asset_format=1,portable=True,sources=['PS1'])))
-        (stage/'settings.ini').write_text('[Game]\nsource=PS1\n')
+        (stage/'settings.ini').write_text('[Display]\npreset=Optimal\n')
         check_cancel(cancel)
         if destination.exists():destination.rmdir()
         os.rename(stage,destination);committed=True;progress(100,'Installation complete');return destination

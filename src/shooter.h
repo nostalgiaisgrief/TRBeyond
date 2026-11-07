@@ -13,7 +13,13 @@ typedef struct TombShooter {
 struct TombPlaytest;
 void tomb_shooter_start(struct TombPlaytest *,int mode);
 void tomb_shooter_mouse(struct TombPlaytest *,int dx,int dy);
+/* Transient device input deliberately lives outside the saved shooter state. */
+void tomb_shooter_stick(struct TombPlaytest *,double x,double z);
+double tomb_shooter_stick_speed(const struct TombPlaytest *);
+void tomb_shooter_set_lock_on(struct TombPlaytest *,int enabled);
+int tomb_shooter_lock_on(const struct TombPlaytest *);
 uint32_t tomb_shooter_input(struct TombPlaytest *,uint32_t);
+void tomb_shooter_prepare_stop(struct TombPlaytest *);
 int tomb_fps_ready(const struct TombPlaytest *);
 int16_t tomb_shooter_render_yaw(const struct TombPlaytest *);
 void tomb_shooter_pose(struct TombPlaytest *);

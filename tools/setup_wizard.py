@@ -39,7 +39,7 @@ class Wizard:
         self.status = tk.StringVar()
         self.payload = Path(getattr(sys, '_MEIPASS', Path(__file__).resolve().parent.parent/'build'/'setup-bundle'))/'payload'
         ttk.Label(root, text='Tomb Raider Beyond', font=('Segoe UI', 22, 'bold')).pack(anchor='w', padx=28, pady=(24, 6))
-        ttk.Label(root, text=f'Version {VERSION} • Portable installation • Bring your own original game data').pack(anchor='w', padx=28)
+        ttk.Label(root, text=f'Version {VERSION}').pack(anchor='w', padx=28)
         self.body = ttk.Frame(root, padding=28); self.body.pack(fill='both', expand=True)
         buttons = ttk.Frame(root, padding=(28, 12)); buttons.pack(fill='x', side='bottom')
         self.back = ttk.Button(buttons, text='Back', command=self.go_back); self.back.pack(side='left')
@@ -228,7 +228,12 @@ class Wizard:
 
     def launch(self):
         path = Path(self.destination.get())
-        subprocess.Popen([str(path/'TombRaiderBeyond.exe')], cwd=path)
+        try:
+            subprocess.Popen([str(path/'TombRaiderBeyond.exe')], cwd=path)
+        except OSError as error:
+            messagebox.showerror('Cannot launch Tomb Raider Beyond', str(error))
+            return
+        self.root.destroy()
 
 
 if __name__ == '__main__':

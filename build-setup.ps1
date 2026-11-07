@@ -2,6 +2,17 @@ param([string]$Python='python')
 $ErrorActionPreference='Stop'
 . (Join-Path $PSScriptRoot 'tools/build-version.ps1')
 $setupName = "TombRaiderBeyond-$releaseVersion"
+$installer = Join-Path $PSScriptRoot "dist/setup/$setupName.exe"
+# Windows locks an installer while its wizard (or extraction process) is running.
+# Check before doing the expensive packaging work; do not remove the old build.
+if (Test-Path -LiteralPath $installer) {
+    try {
+        $installerCheck = [IO.File]::Open($installer, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, [IO.FileShare]::None)
+        $installerCheck.Dispose()
+    } catch {
+        throw "Cannot replace '$installer'. Close the existing installer and run the build again. Windows reported: $($_.Exception.Message)"
+    }
+}
 # Reject a stale game binary rather than bundling mismatched versions.
 $runtime = Join-Path $PSScriptRoot 'build/tomb_preview.exe'
 if (-not (Test-Path -LiteralPath $runtime) -or (Get-Item -LiteralPath $runtime).VersionInfo.ProductVersion -ne $releaseVersion) {
@@ -17,6 +28,8 @@ try {
     if (Test-Path -LiteralPath $legacyPayload) { Remove-Item -LiteralPath $legacyPayload }
     Copy-Item -LiteralPath third_party/openxr/bin/openxr_loader.dll -Destination "$payload/openxr_loader.dll" -Force
     Copy-Item -LiteralPath third_party/openxr/LICENSE -Destination "$payload/OPENXR-LICENSE.txt" -Force
+    Copy-Item -LiteralPath third_party/SDL3/bin/SDL3.dll -Destination "$payload/SDL3.dll" -Force
+    Copy-Item -LiteralPath third_party/SDL3/LICENSE.txt -Destination "$payload/SDL3-LICENSE.txt" -Force
     & $Python tools/prepare_ub.py data_reference_files/UB/DATA "$payload/Source/UB"
     if ($LASTEXITCODE -ne 0) { throw 'Unfinished Business asset preparation failed' }
     # Remove documentation staged by earlier builds; only runtime files ship.
@@ -41,6 +54,9 @@ VSVersionInfo(
     # capture both streams directly, preserving the actual build exit code.
     $buildRunner = "import subprocess, sys; log = open(sys.argv[1], 'wb'); result = subprocess.run([sys.executable] + sys.argv[2:], stdout=log, stderr=subprocess.STDOUT); log.close(); sys.exit(result.returncode)"
     & $Python -c $buildRunner build/setup-build.log -m PyInstaller --noconfirm --clean --onefile --windowed --name $setupName --version-file $setupVersionFile --distpath dist/setup --workpath build/setup-pyinstaller --specpath build/setup-bundle --paths tools --collect-all av --copy-metadata av --add-data "$payload;payload" --add-data "$releaseVersionFile;." tools/setup_wizard.py
-    if($LASTEXITCODE -ne 0){throw 'Wizard build failed; see build/setup-build.log'}
+    if($LASTEXITCODE -ne 0){
+        $failureDetails = Get-Content -LiteralPath build/setup-build.log -Tail 12
+        throw "Wizard build failed. The installer has not been updated. See build/setup-build.log:`n$($failureDetails -join [Environment]::NewLine)"
+    }
     Get-FileHash -LiteralPath "dist/setup/$setupName.exe" -Algorithm SHA256
 } finally {Pop-Location}

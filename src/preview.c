@@ -115,6 +115,7 @@ static TombSoundMixer sound_mixer,ring_sound_mixer;
 static TombSoundOutput *sound_output,*ring_sound_output;
 static int sound_failed;
 static int draw_requested;
+static unsigned char held_keys[256],stats_consumed_keys[256];
 static void render_reset(void);
 static int inventory_key_only,inventory_ring_current[3];
 static int inventory_open,inventory_selected,inventory_stats,inventory_keys,level_number=1;
@@ -249,6 +250,7 @@ static int autosave_poll(void){
 }
 static void settings_path(char *path){snprintf(path,MAX_PATH,"%s/settings.ini",install_root);}
 static unsigned *control_bindings(void){return controls_page==2?fps_bindings:controls_page?shooter_bindings:bindings;}
+#include "preview_gamepad.h"
 #include "preview_settings.h"
 
 static void vr_sound_listener(double listener[3],int *room);
@@ -1401,7 +1403,7 @@ static void overlay(void) {
         tomb_text_layout(detail_notice,&style,width,height,font_glyph,NULL);
         glDisable(GL_ALPHA_TEST);glDisable(GL_TEXTURE_2D);
     }
-    if(overlay_pass!=1 && play.shooter.mode && play.pistols.drawn && play.lara.health>0 && !inventory_open && !title_mode && !complete){
+    if(overlay_pass!=1 && play.shooter.mode && !tomb_shooter_lock_on(&play) && play.pistols.drawn && play.lara.health>0 && !inventory_open && !title_mode && !complete){
         float x=width*.5f,y=height*.5f;glDisable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);
         glColor3f(0,0,0);glLineWidth(3);glBegin(GL_LINES);glVertex2f(x-7,y);glVertex2f(x+7,y);glVertex2f(x,y-7);glVertex2f(x,y+7);glEnd();
         glColor3f(1,1,1);glLineWidth(1);glBegin(GL_LINES);glVertex2f(x-6,y);glVertex2f(x+6,y);glVertex2f(x,y-6);glVertex2f(x,y+6);glEnd();
@@ -1597,7 +1599,6 @@ static int capture(const char *path) {
 #include "../tests/midas_render.h"
 #endif
 static unsigned menu_entries=0;
-static unsigned char held_keys[256],stats_consumed_keys[256];
 /* Desktop presentation limits never throttle the headset compositor. */
 static void display_size(HWND window){
     RECT client;GetClientRect(window,&client);width=client.right>0?client.right:1;height=client.bottom>0?client.bottom:1;
@@ -1660,11 +1661,25 @@ static unsigned input_key(WPARAM key,LPARAM flags) {
     }
     return (unsigned)key;
 }
-static unsigned game_input(void) {
+#include "preview_gamepad_runtime.h"
+static unsigned keyboard_game_input(void) {
  if(play.shooter.mode==TOMB_MODE_FPS){static const unsigned f[10]={1,2,4,8,128,16,64,TOMB_INPUT_SHOOT,TOMB_INPUT_AIM,0};unsigned in=0;for(int j=0;j<10;j++)if(held_keys[fps_bindings[j]])in|=f[j];return in;}
  if(play.shooter.mode){static const unsigned f[9]={1,2,4,8,128,16,64,TOMB_INPUT_AIM,0};unsigned in=0;for(int j=0;j<9;j++)if(held_keys[shooter_bindings[j]])in|=f[j];return in;}
  static const unsigned flags[13]={1,2,4,8,1024,2048,128,16,64,0,4096,512,0};unsigned input=held_keys[VK_RETURN]?64u:0;
  for(int i=0;i<13;i++)if(held_keys[bindings[i]])input|=flags[i];return input;
+}
+static unsigned game_input(void){
+ unsigned keys=keyboard_game_input(),pad=play.shooter.mode<3?pad_game_input():0;
+ if(play.shooter.mode==TOMB_MODE_SHOOTER){
+  if(keys&TOMB_INPUT_AIM)tps_aim_device=0;else if(pad&TOMB_INPUT_AIM)tps_aim_device=1;
+  tomb_shooter_set_lock_on(&play,tps_aim_methods[tps_aim_device]);
+ }
+ tomb_shooter_stick(&play,0,0);
+ int digital=pad_action(pad_buttons,PAD_FORWARD) || pad_action(pad_buttons,PAD_BACK) || pad_action(pad_buttons,PAD_LEFT) || pad_action(pad_buttons,PAD_RIGHT);
+ /* Explicit digital movement takes precedence over a resting/deflected stick. */
+ if(keys&15)pad&=~15u;
+ else if(play.shooter.mode && play.shooter.mode<3 && !digital && (pad_move_x || pad_move_z))tomb_shooter_stick(&play,pad_move_x,pad_move_z);
+ return keys|pad;
 }
 static int fullscreen;
 static int mouse_captured,mouse_camera_active;
@@ -1749,7 +1764,10 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     if(msg==WM_SIZE) { display_size(w); return 0; }
     if(media_busy && (msg==WM_KEYDOWN || msg==WM_KEYUP || msg==WM_SYSKEYDOWN || msg==WM_SYSKEYUP)){if(msg==WM_KEYDOWN && wp==VK_ESCAPE && !(lp&(1L<<30)))media_skip=1;return 0;}
     if(msg==WM_KEYDOWN) {
-        if(binding_wait && !(lp&(1L<<30))){if(wp!=VK_ESCAPE && wp>0 && wp<256){control_bindings()[option_row]=(unsigned)wp;settings_write();}binding_wait=0;return 0;}
+        if(binding_wait && !(lp&(1L<<30))){
+            if(pad_wait){if(wp==VK_ESCAPE)binding_wait=pad_wait=0;return 0;}
+            if(wp!=VK_ESCAPE && wp>0 && wp<256){control_bindings()[controls_key_index()]=(unsigned)wp;settings_write();}binding_wait=0;return 0;
+        }
         int detail_row=wp==VK_F1?1:wp==VK_F2?2:wp==VK_F3?3:wp==VK_F4?4:wp==VK_F7?5:wp==VK_F8?6:wp==VK_F9?7:0;
         if(detail_row){if(wp<256)held_keys[wp]=0;if(!(lp&(1L<<30))){frontend_detail_cycle(detail_row,1);if(!title_mode){frontend_detail_notice(detail_row);detail_notice_time=3.0;}settings_write();}return 0;}
         if(wp==VK_F5 || wp==VK_F6){
@@ -1808,9 +1826,11 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
 #include "../tests/pickup3d_render.h"
 #include "../tests/original_review_test.h"
 #include "../tests/consistent_weapons_test.h"
+#include "../tests/gamepad_test.h"
 #endif
 static int jaw_diagnostic_tick(TombPlaytest *p,uint32_t input){
- if(!jaw_log)return tomb_playtest_tick(p,input);
+ if(!jaw_log){int health=p->lara.health,falling=p->lara.actor.flags&8,speed=p->lara.actor.fall_speed;uint32_t shots=p->pistols.shots;
+  int ok=tomb_playtest_tick(p,input);pad_feedback(health,shots,falling,speed);return ok;}
  TombActor before=p->lara.actor;int health=p->lara.health;
  int f2=objects.items[2].actor.frame,f3=objects.items[3].actor.frame;
  unsigned touch2=objects.enemies->items[2].touch,touch3=objects.enemies->items[3].touch;
@@ -1820,6 +1840,7 @@ static int jaw_diagnostic_tick(TombPlaytest *p,uint32_t input){
  return ok;
 }
 int main(int argc,char **argv) {
+    pad_defaults();
 #ifndef TOMB_BUILD_TESTS
     /* Test switches must not silently run an ordinary game build. */
     for(int i=1;i<argc;i++)if(!strncmp(argv[i],"--",2) && strstr(argv[i],"-test")) {
@@ -1835,6 +1856,7 @@ int main(int argc,char **argv) {
         if(!strcmp(argv[i],"--title")){title_mode=1;caves=1;}
         else if(!strcmp(argv[i],"--autosave-switch-test")){autosave_switch_test=front_test=caves=1;}
         else if(!strcmp(argv[i],"--frontend-test")){front_test=1;caves=1;}
+        else if(!strcmp(argv[i],"--gamepad-test")){front_test=1;caves=1;}
         else if(!strcmp(argv[i],"--campaign-test"))lighting_test=1;
         else if(!strcmp(argv[i],"--colour-options-test") || !strcmp(argv[i],"--details-menu-test"))lighting_test=1;
         else if(!strcmp(argv[i],"--pickup3d-test") || !strcmp(argv[i],"--pickup-depth-test") || !strcmp(argv[i],"--lighting-test") || !strcmp(argv[i],"--render-options-test") || !strcmp(argv[i],"--original-review-test") || !strcmp(argv[i],"--consistent-weapons-test"))lighting_test=1;
@@ -2320,7 +2342,11 @@ int main(int argc,char **argv) {
     if(interpolation_test){int passed=interpolation_render_check();if(passed && shot)passed=capture(shot);return passed?0:2;}
 #endif
     if(!frontend_assets())return 1;
+#ifdef TOMB_BUILD_TESTS
+    if(strstr(GetCommandLineA(),"--gamepad-test"))return gamepad_check()?0:2;
+#endif
     if(!shot && !front_test){settings_read();settings_write();}
+    if(!shot && !front_test)pad_init();
     display_size(window);
 #ifdef TOMB_BUILD_TESTS
     if(autosave_switch_test)return autosave_switch_check()?0:2;
@@ -2407,6 +2433,7 @@ int main(int argc,char **argv) {
             if(vr.menu_request && !inventory_open)inventory_begin();
         }
         int focused=xr.instance?xr.state==XR_SESSION_STATE_FOCUSED:GetActiveWindow()==window;
+        pad_frame(dt,focused);
         int suspended=paused || inventory_pauses() || title_mode || objects.progress->complete || !focused;
         if(!shot && !pose_mode && !suspended){
             if(was_suspended)render_reset();
@@ -2462,7 +2489,7 @@ int main(int argc,char **argv) {
         if(!focused && !xr.instance)Sleep(16);
     }
     if(jaw_log){fclose(jaw_log);jaw_log=NULL;}
-    xr_close();mouse_release();render_reset();frontend_free();audio_stop();
+    pad_close();xr_close();mouse_release();render_reset();frontend_free();audio_stop();
     tomb_sound_output_close(ring_sound_output);tomb_sound_output_close(sound_output);tomb_sound_bank_free(&sound_bank);
     glDeleteTextures((GLsizei)visual->tile_count,font_tiles);free(font_tiles);glDeleteTextures((GLsizei)(visual->tile_count*2+2),tiles); free(tiles);
     glDeleteTextures(2,shadow_textures);

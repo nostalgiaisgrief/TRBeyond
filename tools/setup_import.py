@@ -20,7 +20,7 @@ LEVELS = ['GYM', 'TITLE', 'CUT1', 'CUT2', 'CUT3', 'CUT4', 'LEVEL1', 'LEVEL2',
 MOVIES = ['CAFE', 'CANYON', 'CORE', 'END', 'ESCAPE', 'LIFT', 'MANSION',
           'PRISON', 'PYRAMID', 'SNOW', 'VISION']
 PICTURES = ['TITLEH', 'END', 'CRED1', 'CRED2', 'CRED3']
-RUNTIME_FILES = ['TombRaiderBeyond.exe', 'openxr_loader.dll', 'OPENXR-LICENSE.txt']
+RUNTIME_FILES = ['TombRaiderBeyond.exe', 'openxr_loader.dll', 'OPENXR-LICENSE.txt', 'SDL3.dll', 'SDL3-LICENSE.txt']
 
 
 def bundled_campaign_files(payload):
@@ -379,11 +379,11 @@ def install_sources(selections, destination, payload, progress=lambda value, tex
                     raise ValueError('Unexpected data in an unselected source folder.')
                 shutil.rmtree(placeholder)
                 os.rename(target/'Source'/edition, placeholder)
-        preferred = next(edition for edition in ('PS1', 'DOS', 'TRR') if edition in editions)
         (bundle/'trb-install.json').write_text(json.dumps(dict(
             format=2, asset_format=ASSET_VERSION, portable=True, sources=editions)))
-        (bundle/'settings.ini').write_text(
-            f'[Game]\nlevel_source={preferred}\nmusic_speech_source={preferred}\nfmv_source={preferred}\n')
+        # The runtime resolves Optimal's independent preferences against the
+        # installed sources (including PS1+DOS audio when both are present).
+        (bundle/'settings.ini').write_text('[Display]\npreset=Optimal\n')
         check_cancel(cancel)
         if destination.exists():
             destination.rmdir()  # Refuse if another process populated it meanwhile.
@@ -467,7 +467,7 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
                 records.append(dict(path=p.relative_to(source).as_posix(), bytes=p.stat().st_size, sha256=digest))
         (source/'import-manifest.json').write_text(json.dumps(dict(edition='DOS', input_kind=kind, format=2, asset_format=ASSET_VERSION, converter=1, files=records), indent=2))
         (stage/'trb-install.json').write_text(json.dumps(dict(format=2, portable=True, asset_format=ASSET_VERSION, sources=['DOS'])))
-        (stage/'settings.ini').write_text('[Game]\nsource=DOS\n')
+        (stage/'settings.ini').write_text('[Display]\npreset=Optimal\n')
         check_cancel(cancel)
         if destination.exists():
             destination.rmdir()  # Empty only; never remove an existing installation.

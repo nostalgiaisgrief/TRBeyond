@@ -36,3 +36,9 @@
 !/third_party/openxr/include/openxr/*.h
 !/third_party/openxr/bin/openxr_loader.dll
 !/third_party/openxr/LICENSE
+
+# SDL 3.4.20 gamepad dependency (official Windows x64 SDK).
+!/third_party/SDL3/include/SDL3/*.h
+!/third_party/SDL3/lib/SDL3.lib
+!/third_party/SDL3/bin/SDL3.dll
+!/third_party/SDL3/LICENSE.txt

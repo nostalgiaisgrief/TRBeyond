@@ -358,6 +358,7 @@ static int water_tick(TombPlaytest *p,uint32_t input) {
     }
     tomb_water_damping(w,surface);
     tomb_water_current(p->objects,a,&c,w);
+    tomb_shooter_prepare_stop(p);
     if(!tomb_animate(a,&p->animation)) { p->blocked=1; p->status="Water animation unavailable"; return 0; }
     w->weapon_status=p->animation.weapon_status; /* Preserve animation end commands. */
     int32_t focus_x=a->x,focus_y=a->y,focus_z=a->z;
@@ -556,6 +557,7 @@ static int playtest_tick(TombPlaytest *p,uint32_t input) {
         a->frame=(int16_t)(frame-1);
     }
     int32_t fps_x=a->x,fps_z=a->z;
+    tomb_shooter_prepare_stop(p);
     if(!tomb_animate(a,&p->animation)) { p->blocked=1; p->status="Animation service unavailable"; }
     if(p->shooter.mode==TOMB_MODE_FPS && a->current==19 && (a->animation==97 || a->animation==102)){
         for(int n=1;n<10 && a->current==19;n++)if(!tomb_animate(a,&p->animation)){p->blocked=1;break;}
@@ -565,6 +567,13 @@ static int playtest_tick(TombPlaytest *p,uint32_t input) {
     }
     if(p->shooter.mode==TOMB_MODE_FPS && p->shooter.mode_held && !(a->flags&8) && a->current==1){
         a->x=fps_x+(a->x-fps_x)/2;a->z=fps_z+(a->z-fps_z)/2;a->speed/=2;
+    }
+    /* Scale ordinary FPS ground travel before collision, retaining the existing
+       full-stick 2x run speed and explicit Walk/Weapon Mode reductions. */
+    if(p->shooter.mode==TOMB_MODE_FPS && !(a->flags&8) && a->current==1){
+        double scale=tomb_shooter_stick_speed(p);
+        a->x=fps_x+(int32_t)lround((a->x-fps_x)*scale);
+        a->z=fps_z+(int32_t)lround((a->z-fps_z)*scale);a->speed=(int16_t)lround(a->speed*scale);
     }
     if(p->objects && !p->blocked) {
         int hit=0;

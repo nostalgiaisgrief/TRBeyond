@@ -7,6 +7,20 @@
 #include <math.h>
 #include <string.h>
 #include <stdlib.h>
+static struct { const TombPlaytest *owner; double x,z; int active; } stick;
+static struct { const TombPlaytest *owner; int enabled; } aim_method;
+int tomb_shooter_lock_on(const TombPlaytest *p){return p->shooter.mode==TOMB_MODE_SHOOTER && aim_method.owner==p && aim_method.enabled;}
+void tomb_shooter_set_lock_on(TombPlaytest *p,int enabled){
+    enabled=enabled!=0;
+    if(aim_method.owner!=p || aim_method.enabled!=enabled){
+        p->pistols.target=-1;p->pistols.left.lock=p->pistols.right.lock=0;
+        p->pistols.target_yaw=p->pistols.target_pitch=0;
+    }
+    aim_method.owner=p;aim_method.enabled=enabled;
+}
+void tomb_shooter_stick(TombPlaytest *p,double x,double z){stick.owner=p;stick.x=x;stick.z=z;stick.active=x!=0 || z!=0;}
+double tomb_shooter_stick_speed(const TombPlaytest *p){return stick.active && stick.owner==p?fmin(1,hypot(stick.x,stick.z)):1;}
+static int stick_angle(const TombPlaytest *p,int x,int z){return stick.active && stick.owner==p?(int)lround(atan2(stick.x,stick.z)*65536/6.283185307179586):tomb_object_angle(z,x);}
 static int clamp(int x,int lo,int hi){return x<lo?lo:x>hi?hi:x;}
 static int16_t turn(int16_t from,int16_t to,int speed){return tomb_word(from+clamp(tomb_word(to-from),-speed,speed));}
 /* Ray/box slabs in object-local space; collision bounds also keep the camera
@@ -76,6 +90,8 @@ void tomb_shooter_world_ray(const TombPlaytest *p,TombCameraPoint from,TombCamer
     if(best<len){to->x=from.x+(int32_t)(d[0]*best);to->y=from.y+(int32_t)(d[1]*best);to->z=from.z+(int32_t)(d[2]*best);TombSectorRef ref;if(tomb_find_sector(p->level,to->x,to->y,to->z,from.room,&ref))to->room=(int16_t)ref.room;}
 }
 void tomb_shooter_start(TombPlaytest *p,int mode){
+    tomb_shooter_set_lock_on(p,0);
+    tomb_shooter_stick(p,0,0);
     p->tps_slope_jump=p->tps_drop_yaw_offset=p->fps_shot_held=0;memset(&p->fps,0,sizeof p->fps);
     memset(&p->shooter,0,sizeof p->shooter);p->shooter.mode=mode>=TOMB_MODE_ORIGINAL && mode<=TOMB_MODE_VR?mode:0;
     p->shooter.yaw=p->lara.actor.yaw;p->shooter.pitch=-1820;
@@ -89,6 +105,52 @@ void tomb_shooter_mouse(TombPlaytest *p,int dx,int dy){
 static void anim(TombPlaytest *p,int index){
     TombActor *a=&p->lara.actor;const TombAnim *v=p->level->animations+index;
     a->animation=(int16_t)index;a->frame=v->first_frame;a->current=a->goal=v->state;
+}
+/* Called immediately before tomb_animate increments the frame. Input polling
+   and collision rollback must only ever see a drawable pose. */
+void tomb_shooter_prepare_stop(TombPlaytest *p){
+    TombActor *actor=&p->lara.actor;
+    if(p->shooter.mode!=TOMB_MODE_SHOOTER)return;
+    int gait_index=actor->animation;
+    if(p->lara.water_status){
+        int to_glide=actor->current==17 && actor->goal==18;
+        int to_surface_tread=actor->current==34 && actor->goal==33;
+        if(!to_glide && !to_surface_tread)return;
+    }else{
+        if((actor->flags&8) || actor->goal!=TOMB_STOP || (actor->current!=TOMB_RUN && actor->current!=TOMB_WALK))return;
+        if(actor->animation!=0 && actor->animation!=1 && (actor->animation<55 || actor->animation>60))return;
+        gait_index=actor->current==TOMB_WALK?1:0;
+    }
+    const TombLevel *level=p->level;
+    const TombAnim *gait=&level->animations[gait_index];
+    const TombAnim *active=&level->animations[actor->animation];
+    int length=gait->last_frame-gait->first_frame+1;
+    int active_length=active->last_frame-active->first_frame+1;
+    if(length<=0 || active_length<=0)return;
+    int phase=clamp(actor->frame-active->first_frame,0,active_length-1);
+    int next=gait->first_frame+(int)(((int64_t)phase*length/active_length+1)%length);
+    int best_distance=length;
+    for(int i=0;i<gait->change_count;i++){
+        size_t index=(size_t)gait->change_index+i;
+        if(index>=level->change_count)return;
+        const TombChange *change=&level->changes[index];
+        if(change->goal!=actor->goal)continue;
+        for(int j=0;j<change->count;j++){
+            size_t entry=(size_t)change->index+j;
+            if(entry>=level->range_count)return;
+            const TombRange *range=&level->ranges[entry];
+            if(range->first<gait->first_frame || range->last>gait->last_frame || range->last<range->first)continue;
+            for(int frame=range->first;frame<=range->last;frame++){
+                int distance=abs(frame-next);
+                if(length-distance<distance)distance=length-distance;
+                if(distance<best_distance){
+                    best_distance=distance;
+                    actor->animation=(int16_t)gait_index;
+                    actor->frame=(int16_t)(frame-1);
+                }
+            }
+        }
+    }
 }
 int tomb_fps_ready(const TombPlaytest *p){
     int state=p->lara.actor.current;
@@ -107,7 +169,7 @@ static uint32_t fps_input(TombPlaytest *p,uint32_t raw){
     s->dual=!toggle;
     s->mode_held=toggle;if(!(raw&128))s->drop_latched=0;
     int x=((raw&8)!=0)-((raw&4)!=0),z=((raw&1)!=0)-((raw&2)!=0);
-    int16_t camera=s->yaw,heading=tomb_word(camera+tomb_object_angle(z,x));
+    int16_t camera=s->yaw,heading=tomb_word(camera+stick_angle(p,x,z));
     /* Traversal owns the hands during this part of the tick. */
     p->animation.weapon_status=0;
     if(a->current==10 || a->current==30 || a->current==31){
@@ -136,7 +198,7 @@ static uint32_t fps_input(TombPlaytest *p,uint32_t raw){
             double angle=p->animation.move_angle*(6.283185307179586/65536);
             double vx=sin(angle)*a->speed,vz=cos(angle)*a->speed;
             double target=heading*(6.283185307179586/65536);
-            int speed=((raw&128)?47:94)/(s->mode_held?2:1);
+            int speed=(int)lround((((raw&128)?47:94)/(s->mode_held?2:1))*tomb_shooter_stick_speed(p));
             double dx=sin(target)*speed-vx,dz=cos(target)*speed-vz,len=sqrt(dx*dx+dz*dz);
             double t=len>8?8/len:1;vx+=dx*t;vz+=dz*t;
             a->speed=(int16_t)lround(sqrt(vx*vx+vz*vz));
@@ -148,7 +210,7 @@ static uint32_t fps_input(TombPlaytest *p,uint32_t raw){
     if((raw&16) && !s->jump_held && p->lara.health>0 &&
        (a->current==0 || a->current==1 || a->current==2 || a->current==5 || a->current==16 || a->current==24 || a->current==32)){
         a->yaw=(x||z)?heading:camera;anim(p,77);a->flags|=8;a->fall_speed=-116;
-        a->speed=(x||z)?((raw&128)?47:94)/(s->mode_held?2:1):0;
+        a->speed=(x||z)?(int16_t)lround((((raw&128)?47:94)/(s->mode_held?2:1))*tomb_shooter_stick_speed(p)):0;
         p->air.move_angle=p->animation.move_angle=a->yaw;
         s->input=raw;s->aim_held=s->jump_held=1;
         return (raw&1)?64:0;
@@ -156,9 +218,10 @@ static uint32_t fps_input(TombPlaytest *p,uint32_t raw){
     /* Reuse collision and instant gait entry, with FPS-relative translation. */
     if(a->current==0 || a->current==1 || a->animation==11 || a->animation==103)a->yaw=(x||z)?heading:camera;
     int drawn=p->pistols.drawn;s->mode=TOMB_MODE_SHOOTER;s->yaw=(x||z)?heading:camera;p->pistols.drawn=0;
-    uint32_t out=shooter_input(p,(raw&(16|64))|((x||z)?1:0),1);
+    int analog=stick.active;stick.active=0; /* Heading already includes the stick angle. */
+    uint32_t out=shooter_input(p,(raw&(16|64))|((x||z)?1:0),1);stick.active=analog;
     p->pistols.drawn=drawn;s->mode=TOMB_MODE_FPS;s->yaw=camera;s->input=raw;s->aim_held=1;
-    if((a->flags&8) && a->current==3){a->speed=((raw&128)?47:94)/(s->mode_held?2:1);}
+    if((a->flags&8) && a->current==3){a->speed=(int16_t)lround((((raw&128)?47:94)/(s->mode_held?2:1))*tomb_shooter_stick_speed(p));}
     return out;
 }
 int16_t tomb_shooter_render_yaw(const TombPlaytest *p){
@@ -180,9 +243,9 @@ static uint32_t shooter_input(TombPlaytest *p,uint32_t raw,int fps){
     if(s->mode==TOMB_MODE_FPS)return fps_input(p,raw);
     int jump=(raw&16)!=0,pressed=jump&&!s->jump_held;s->jump_held=jump;s->input=raw;s->aim_held=(raw&TOMB_INPUT_AIM)!=0;
     /* Action belongs to combat while aiming, and to traversal otherwise. */
-    uint32_t out=raw&(64|128);if(s->aim_held)out&=~64u;
+    uint32_t out=raw&(64|128|4096);if(s->aim_held)out&=~64u;
     int x=((raw&8)!=0)-((raw&4)!=0),z=((raw&1)!=0)-((raw&2)!=0),moving=x||z;
-    int16_t heading=tomb_word(s->yaw+tomb_object_angle(z,x));
+    int16_t heading=tomb_word(s->yaw+stick_angle(p,x,z));
     if(p->lara.health<=0)return 0;
     p->movement.turn_rate=0;
     /* Heavy landings own movement until their recovery pose completes. */
@@ -192,9 +255,10 @@ static uint32_t shooter_input(TombPlaytest *p,uint32_t raw,int fps){
         if(a->current==39 || a->current==40 || a->current==55)return out;
         if(p->lara.water_status==1){
             if(!fps && (a->current==35 || ((out&64) && !moving && !jump)))return out;
-            double pitch=s->pitch*(6.283185307179586/65536),forward=z*cos(pitch);
-            if(moving)heading=tomb_word(s->yaw+(int)(atan2(x,forward)*65536/6.283185307179586));
-            int tilt=jump?14560:(int)(atan2(z*sin(pitch),sqrt(x*x+forward*forward))*65536/6.283185307179586);
+            double sx=stick.active && stick.owner==p?stick.x:x,sz=stick.active && stick.owner==p?stick.z:z;
+            double pitch=s->pitch*(6.283185307179586/65536),forward=sz*cos(pitch);
+            if(moving)heading=tomb_word(s->yaw+(int)(atan2(sx,forward)*65536/6.283185307179586));
+            int tilt=jump?14560:(int)(atan2(sz*sin(pitch),sqrt(sx*sx+forward*forward))*65536/6.283185307179586);
             if(moving)a->yaw=turn(a->yaw,heading,8192);
             if(moving || jump)p->lara.pitch=turn(p->lara.pitch,(int16_t)tilt,2730);
             if(moving || jump)out|=16;
@@ -205,6 +269,15 @@ static uint32_t shooter_input(TombPlaytest *p,uint32_t raw,int fps){
         }
         return out;
     }
+    /* Steer forward jumps toward camera-relative movement. Only the sideways
+       component bends the flight path, at most 1.5 degrees per 30 Hz tick. */
+    if(!fps && moving && (a->flags&8) && a->current==3 && a->speed>0 && !p->tps_slope_jump){
+        int error=tomb_word(heading-a->yaw);
+        double lateral=sin(error*(6.283185307179586/65536));
+        int steer=(int)lround(lateral*tomb_shooter_stick_speed(p)*(65536.0/240));
+        a->yaw=tomb_word(a->yaw+steer);
+        p->animation.move_angle=p->air.move_angle=a->yaw;
+    }
     /* Release direction to shorten ordinary jumps, without altering gravity. */
     if(!fps && !p->tps_slope_jump && !moving && (a->flags&8) && (a->current==3 || a->current==11 || (a->current>=25 && a->current<=27)))
         a->speed=(int16_t)(a->current==11 && a->speed>0?(a->speed>6?a->speed-4:2):(a->speed>4?a->speed-4:0));
@@ -214,18 +287,24 @@ static uint32_t shooter_input(TombPlaytest *p,uint32_t raw,int fps){
         (a->animation>=88 && a->animation<=90);
     int ground=!(a->flags&8) && (locomotion || a->animation==11 || a->animation==103 || (fps && a->animation==24) || a->animation==82 || a->animation==99);
     if(ground){
-        int retreat=z<0 && !x && (s->aim_held || p->pistols.drawn);
+        int backward=stick.active && stick.owner==p?stick.z<0 && -stick.z>=fabs(stick.x):z<0 && !x;
+        int retreat=backward && !tomb_shooter_lock_on(p) && (s->aim_held || p->pistols.drawn);
+        int forward_gait=a->animation==0 || a->animation==1 || (a->animation>=55 && a->animation<=60);
+        int stop_animation=a->animation==2 || a->animation==3 || a->animation==8 || a->animation==10;
         if(moving){
             int16_t target=retreat?tomb_word(heading+32768):heading;
-            if(!fps && (s->aim_held || p->pistols.drawn)){
+            if(!fps && !tomb_shooter_lock_on(p) && (s->aim_held || p->pistols.drawn)){
                 /* Unwrap around camera-forward, routing across Lara's back
                    instead of taking a shorter path through camera-facing. */
                 int from=tomb_word(a->yaw-s->yaw),to=tomb_word(target-s->yaw);
                 a->yaw=tomb_word(a->yaw+clamp(to-from,-8192,8192));
             }else a->yaw=turn(a->yaw,target,8192);
         }
-        else if(s->aim_held || p->pistols.drawn)a->yaw=turn(a->yaw,s->yaw,8192);
-        else {int diff=tomb_word(s->yaw-a->yaw);if(abs(diff)>16016)a->yaw=turn(a->yaw,tomb_word(s->yaw+(diff>0?-16016:16016)),4096);}
+        else if(fps || !(forward_gait || stop_animation)){
+            /* Idle camera alignment begins after the stopping foot has planted. */
+            if(s->aim_held || p->pistols.drawn)a->yaw=turn(a->yaw,s->yaw,8192);
+            else {int diff=tomb_word(s->yaw-a->yaw);if(abs(diff)>16016)a->yaw=turn(a->yaw,tomb_word(s->yaw+(diff>0?-16016:16016)),4096);}
+        }
         if(!fps && moving && pressed && (raw&128) && !p->pistols.drawn && !s->aim_held){
             a->yaw=moving?heading:s->yaw;anim(p,moving?157:156);
             a->flags|=8;a->fall_speed=-100;a->speed=75;
@@ -234,11 +313,13 @@ static uint32_t shooter_input(TombPlaytest *p,uint32_t raw,int fps){
         }
         if(moving && pressed){
             int index=77,offset=0;
-            if(p->pistols.drawn && (!x || !z)){
-                if(x){index=x<0?79:81;offset=x<0?-16384:16384;}
-                else if(z<0){index=75;offset=-32768;}
+            int sideways=tomb_shooter_lock_on(p) && stick.active && stick.owner==p && fabs(stick.x)>fabs(stick.z);
+            if(p->pistols.drawn && (backward || sideways || !x || !z)){
+                if(backward){index=75;offset=-32768;}
+                else if(x){index=x<0?79:81;offset=x<0?-16384:16384;}
             }
             a->yaw=offset?s->yaw:heading;anim(p,index);a->flags|=8;a->fall_speed=-100;a->speed=fps?(index==77?75:50):85;
+            if(offset && stick.active && stick.owner==p)a->yaw=tomb_word(heading-offset);
             p->animation.move_angle=p->air.move_angle=tomb_word(a->yaw+offset);
             return out&~128u;
         }
@@ -246,13 +327,17 @@ static uint32_t shooter_input(TombPlaytest *p,uint32_t raw,int fps){
             int index=(raw&128)?1:0;
             int state=retreat?((raw&128)?16:5):p->level->animations[index].state;
             /* Preserve step poses and their displacement while input is held. */
-            if(a->current!=state || (retreat && a->animation!=index))anim(p,index);
+            if(a->current!=state || (retreat && a->animation!=index) || (!fps && a->goal==TOMB_STOP && a->animation!=index))anim(p,index);
             else if(!locomotion)anim(p,index);
             /* Backward collision/control with the forward gait played in reverse. */
             if(retreat)a->current=a->goal=(int16_t)state;
             out|=retreat?2:1;
         }
-        else {if(locomotion)anim(p,11);if(pressed)out|=16;}
+        else {
+            int reverse_gait=(a->current==5 && a->animation==0) || (a->current==16 && a->animation==1);
+            if(locomotion && (fps || pressed || reverse_gait))anim(p,11);
+            if(pressed)out|=16;
+        }
         p->animation.move_angle=tomb_word(a->yaw+(retreat?32768:0));
     }else if(a->current==10 || a->current==30 || a->current==31 || (a->current>=36 && a->current<=38)){
         /* Keep the original ledge and block commands in their local frame. */
@@ -341,7 +426,8 @@ void tomb_shooter_view_blend(const TombPlaytest *p,const double pos[3],double bl
             if(tomb_find_sector(p->level,pivot.x,pivot.y,pivot.z,pivot.room,&ref))pivot.room=(int16_t)ref.room;
         }
     }
-    TombCameraPoint desired={pivot.x-(int32_t)(direction[0]*1350),pivot.y-(int32_t)(direction[1]*1350),pivot.z-(int32_t)(direction[2]*1350),pivot.room};
+    double follow=1350;
+    TombCameraPoint desired={pivot.x-(int32_t)(direction[0]*follow),pivot.y-(int32_t)(direction[1]*follow),pivot.z-(int32_t)(direction[2]*follow),pivot.room};
     tomb_shooter_world_ray(p,pivot,&desired);
     /* Leave a small near-plane margin at an obstruction. */
     double dx=desired.x-pivot.x,dy=desired.y-pivot.y,dz=desired.z-pivot.z,len=sqrt(dx*dx+dy*dy+dz*dz),scale=len>64?(len-48)/len:0;
@@ -356,10 +442,18 @@ void tomb_shooter_view_blend(const TombPlaytest *p,const double pos[3],double bl
         }
     }
     for(int j=0;j<3;j++)target[j]=eye[j]+direction[j]*4096;
-    /* The near-plane margin can move the eye back across a portal. Visibility
-       must start in the eye's room, not the obstruction endpoint's room. */
-    TombSectorRef eye_ref;
-    *room=tomb_find_sector(p->level,(int32_t)eye[0],(int32_t)eye[1],(int32_t)eye[2],pivot.room,&eye_ref)?eye_ref.room:pivot.room;
+    /* Resolve the final eye along its path, including the near-plane margin
+       and FPS blend. A single lookup from Lara's room can miss an intervening
+       doorway: sector lookup clamps coordinates to that room's edge. */
+    double travel[3]={eye[0]-pivot.x,eye[1]-pivot.y,eye[2]-pivot.z};
+    int steps=(int)ceil(sqrt(travel[0]*travel[0]+travel[1]*travel[1]+travel[2]*travel[2])/8);
+    if(steps<1)steps=1;
+    *room=pivot.room;
+    for(int step=0;step<=steps;step++){
+        double t=(double)step/steps;TombSectorRef ref;
+        if(tomb_find_sector(p->level,(int32_t)floor(pivot.x+travel[0]*t),
+            (int32_t)floor(pivot.y+travel[1]*t),(int32_t)floor(pivot.z+travel[2]*t),*room,&ref))*room=ref.room;
+    }
 }
 int tomb_shooter_ray(TombPlaytest *p,TombCameraPoint origin,int16_t yaw,int16_t pitch,TombCameraPoint *hit){
     double y=yaw*(6.283185307179586/65536),t=pitch*(6.283185307179586/65536);

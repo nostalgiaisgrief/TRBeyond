@@ -88,7 +88,7 @@ static void sound(void *user,int id) {
     TombActor *a=&p->lara.actor;p->sounds[p->sound_count++]=(TombSoundEvent){5,id,0,a->x,a->y,a->z,&a->x};++p->sound_events;
 }
 void tomb_combat_target(TombPlaytest *p,int action) {
-    if(p->shooter.mode){tomb_shooter_target(p);return;}
+    if(p->shooter.mode && !tomb_shooter_lock_on(p)){tomb_shooter_target(p);return;}
     if(action)target_info(p);else p->pistols.target=-1;
     if(p->pistols.target<0)acquire(p);
 }
@@ -102,7 +102,7 @@ static int fire(void *user,int16_t yaw,int16_t pitch) {
     TombCameraPoint origin={a->x,a->y-(p->weapon_type==4?500:650),a->z,a->room},hit;
     uint32_t shot_seed=e->random;
     int got=gun_ray(p->weapon_type==4?0:1456,p->visual,o,c,origin,tomb_word((int)yaw+a->yaw),pitch,&e->random,p->animation.sine_quarter,&hit);
-    if(p->shooter.mode){
+    if(p->shooter.mode && !tomb_shooter_lock_on(p)){
         /* Each gun traces to the crosshair from its side of Lara, so cover
            between her and the camera's target still blocks the shot. */
         TombCameraPoint shoulder=origin;
@@ -124,7 +124,7 @@ static int fire(void *user,int16_t yaw,int16_t pitch) {
         int id=tomb_shooter_ray(p,origin,angles[0],angles[1],&hit);got=id>=0;o=got?w->items+id:NULL;c=got?e->items+id:NULL;
     }
     if(got){int damage=tomb_gun_damage(p->gameplay_options,p->weapon_type,c->health);++g->hits;if(c->health>0 && c->health<=damage)++g->kills;c->health=tomb_word(c->health-damage);o->actor.flags|=16;}
-    else if(!p->shooter.mode)tomb_dos_camera_los(p->level,&origin,&hit,0);
+    else if(!p->shooter.mode || tomb_shooter_lock_on(p))tomb_dos_camera_los(p->level,&origin,&hit,0);
     TombActor point={0};point.x=hit.x;point.y=hit.y;point.z=hit.z;point.room=got?o->actor.room:hit.room;
     int effect=tomb_effect_spawn(w,got?158:164,&point,got?o->actor.speed:0,got?o->actor.yaw:0);
     if(!got && effect>=0) {
@@ -226,7 +226,7 @@ int tomb_combat_tick(TombPlaytest *p,uint32_t input) {
         tomb_combat_target(p,(input&64)!=0);
     }
     int combat=g->status==2 || g->status==4 || (!g->status && toggle && !p->lara.water_status);
-    if(p->weapon_type==4)tomb_shotgun_tick(g,toggle,(input&64)!=0 && (!p->shooter.mode || g->left.lock),p->lara.health>0,p->lara.water_status,fire_shotgun,sound,p);
+    if(p->weapon_type==4)tomb_shotgun_tick(g,toggle,(input&64)!=0 && (!p->shooter.mode || tomb_shooter_lock_on(p) || g->left.lock),p->lara.health>0,p->lara.water_status,fire_shotgun,sound,p);
     else if(p->weapon_type==2)tomb_magnums_tick(g,toggle,(input&64)!=0,p->lara.health>0,p->lara.water_status,fire,sound,p);
     else if(p->weapon_type==3)tomb_uzis_tick(g,toggle,(input&64)!=0,p->lara.health>0,p->lara.water_status,fire,sound,p);
     else tomb_pistols_tick(g,toggle,(input&64)!=0,p->lara.health>0,p->lara.water_status,fire,sound,p);
@@ -238,7 +238,7 @@ int tomb_combat_tick(TombPlaytest *p,uint32_t input) {
         p->camera_request.angle=tomb_word(g->head_yaw+g->torso_yaw);
         p->camera_request.elevation=tomb_word(g->head_pitch+g->torso_pitch);
     }
-    if(!looking && combat && g->status!=3 && p->lara.health>0) {
+    if(!looking && combat && g->status!=3 && p->lara.health>0 && !tomb_shooter_lock_on(p)) {
         p->camera_request=(TombCameraRequest){2560,TOMB_CAMERA_COMBAT,8,g->target>=0?g->target_yaw:tomb_word(g->head_yaw+g->torso_yaw),g->target>=0?g->target_pitch:tomb_word(g->head_pitch+g->torso_pitch),p->lara.pitch,-1,0};
     }
     return !p->blocked;

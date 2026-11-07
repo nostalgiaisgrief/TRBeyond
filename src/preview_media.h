@@ -40,11 +40,12 @@ static void media_cursor_refresh(void){
 static int media_messages(MediaAudio *a,HWND window,int *active){
     MSG msg;while(PeekMessage(&msg,NULL,0,0,PM_REMOVE)){if(msg.message==WM_QUIT)running=0;TranslateMessage(&msg);DispatchMessage(&msg);}
     int now=GetActiveWindow()==window && !IsIconic(window);
+    pad_frame(0,now);
     if(xr.instance){TombVrInput in={0};if(xr.begun)xr_end(0,0);xr_begin(&in);now=xr.state==XR_SESSION_STATE_FOCUSED;static int held;int pressed=in.secondary[0] || in.secondary[1];if(pressed && !held)media_skip=1;held=pressed;}
     if(now!=*active){media_cursor_refresh();if(a->device){if(now)waveOutRestart(a->device);else waveOutPause(a->device);}*active=now;}
     return running && !media_skip;
 }
-static void media_begin(void){if(xr.begun)xr_end(0,0);xr.panel_open=0;mouse_release();media_busy=1;media_cursor_refresh();media_skip=0;audio_stop();tomb_sound_output_update(sound_output,1);tomb_sound_output_update(ring_sound_output,1);memset(held_keys,0,sizeof held_keys);}
+static void media_begin(void){if(xr.begun)xr_end(0,0);xr.panel_open=0;mouse_release();media_busy=1;media_cursor_refresh();media_skip=0;pad_blocked|=pad_buttons;pad_frame(0,GetActiveWindow()==WindowFromDC(wglGetCurrentDC()));media_skip=0;audio_stop();tomb_sound_output_update(sound_output,1);tomb_sound_output_update(ring_sound_output,1);memset(held_keys,0,sizeof held_keys);}
 static void media_end(void){if(xr.begun)xr_end(0,0);xr.panel_open=0;media_busy=0;media_cursor_refresh();media_skip=0;accumulator=0;memset(held_keys,0,sizeof held_keys);glEnable(GL_DEPTH_TEST);glDepthMask(GL_TRUE);glColor3f(1,1,1);}
 static int media_audio_check(void){
     unsigned char silence[44100*4]={0};MediaAudio audio={0};

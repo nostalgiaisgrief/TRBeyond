@@ -25,6 +25,7 @@ static void settings_write(void){
     if(!settings_full_colour)settings_texture_filtering=0;
     if(front_test)return;
     char path[MAX_PATH],value[32],key[32];settings_path(path);
+    pad_settings(path,1);
     WritePrivateProfileStringA("Game","campaign",campaign_selected==CAMPAIGN_COMBINED?"Combined":campaign_selected==CAMPAIGN_UB?"UB":"Tomb Raider",path);
     WritePrivateProfileStringA("Game","level_source",source_dirs[source_selected],path);
     WritePrivateProfileStringA("Game","music_speech_source",music_selected==3?"PS1+DOS":source_dirs[music_selected],path);
@@ -66,6 +67,7 @@ static void settings_apply_preset(int preset){
 
 static void settings_read(void){
     char path[MAX_PATH],key[32];settings_path(path);
+    pad_defaults();pad_settings(path,0);
     char style[32],preset[32];
     GetPrivateProfileStringA("Game","campaign","Tomb Raider",style,sizeof style,path);
     if(title_mode)campaign_selected=ub_available()?(!strcmp(style,"Combined")?CAMPAIGN_COMBINED:!strcmp(style,"UB")?CAMPAIGN_UB:CAMPAIGN_TR):CAMPAIGN_TR;
