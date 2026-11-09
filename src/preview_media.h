@@ -78,8 +78,11 @@ static int media_audio_check(void){
     media_audio_close(&audio);return ok;
 }
 static int play_movie(const char *name,int test){
-    if(fmv_selected==0){if(!strcmp(name,"ESCAPE"))return 1;if(!strcmp(name,"CORE"))name="CORELOGO";}
-    char path[MAX_PATH],relative[80];snprintf(relative,sizeof relative,"FMV/%s.bmv",name);media_path(path,relative);
+    if(!custom_campaign_id && fmv_selected==0){if(!strcmp(name,"ESCAPE"))return 1;if(!strcmp(name,"CORE"))name="CORELOGO";}
+    char path[MAX_PATH],relative[80];snprintf(relative,sizeof relative,"FMV/%s.bmv",name);if(custom_campaign_id){
+        char film[100];snprintf(film,sizeof film,"Game/%s",relative);custom_path(path,custom_campaign_id,film);
+        if(GetFileAttributesA(path)==INVALID_FILE_ATTRIBUTES)return 1;
+    }else media_path(path,relative);
     TombMovie movie;if(!tomb_movie_open(&movie,path)){if(!test)MessageBoxA(WindowFromDC(wglGetCurrentDC()),"Movie unavailable. Prepare the original FMV assets with tools/prepare_movies.py.","Tomb Raider Beyond",MB_OK|MB_ICONWARNING);return 0;}
     MediaAudio audio={0};int ok=1;
     if(!test && !media_audio_open(&audio,movie.audio,movie.audio_bytes,movie.rate,movie.channels,16)){media_audio_close(&audio);tomb_movie_close(&movie);return 0;}

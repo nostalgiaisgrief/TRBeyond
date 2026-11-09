@@ -137,6 +137,7 @@ static int load_next_level(void);
 static int title_mode,options_ring,death_menu,slot_menu,slot_current,menu_action,option_row;
 static int new_game_menu,new_game_level=1;
 static int new_game_row,new_game_custom,new_game_mode,controls_page;
+static int new_game_custom_id;
 static unsigned shooter_bindings[9]={'W','S','A','D',VK_SHIFT,VK_SPACE,VK_LBUTTON,VK_RBUTTON,'E'};
 static unsigned fps_bindings[10]={'W','S','A','D',VK_SHIFT,VK_SPACE,'E',VK_LBUTTON,VK_RBUTTON,VK_TAB};
 static const char *fps_binding_names[10]={"Forward","Back","Left","Right","Walk","Jump","Action","Shoot","Weapon Mode","Inventory"};
@@ -186,12 +187,14 @@ static void asset_path(char *path,const char *file){
  source_path(path,relative);
 }
 static void game_level_path(char *path,int number){
+ if(custom_campaign_id){custom_path(path,custom_campaign_id,"Game/level.phd");return;}
  if(number>=UB_FIRST_LEVEL){char relative[80];snprintf(relative,sizeof relative,"DATA/%s",level_choices[number].file);ub_path(path,relative);}
  else asset_path(path,level_choices[number].file);
 }
 static void save_path(char *path,int slot){
  char base[MAX_PATH],folder[MAX_PATH];
- if(front_test)snprintf(folder,sizeof folder,"%s/build/test-saves",install_root);
+ if(custom_campaign_id)custom_path(folder,custom_campaign_id,"SAVES");
+ else if(front_test)snprintf(folder,sizeof folder,"%s/build/test-saves",install_root);
  else if(campaign_selected==CAMPAIGN_COMBINED){
   if(source_legacy && source_selected==1)snprintf(base,sizeof base,"%s/saves",install_root);
   else{char root[MAX_PATH];source_base(root,source_selected);snprintf(base,sizeof base,"%s/SAVES",root);}
@@ -267,7 +270,7 @@ static void speech_free(void){
  speech_level_number=speech_source=-1;
 }
 static TombSoundBank *speech_samples(void){
- if(level_number>=UB_FIRST_LEVEL || music_source()==source_selected)return &sound_bank;
+ if(custom_campaign_id || level_number>=UB_FIRST_LEVEL || music_source()==source_selected)return &sound_bank;
  if(speech_level_number!=level_number || speech_source!=music_source()){
   speech_free();speech_level_number=level_number;speech_source=music_source();
   char path[MAX_PATH],relative[80],error[128];
@@ -791,7 +794,7 @@ static int draw_lara_actor(const TombObject *clone) {
             glRotatef((c?c->pitch:play.lara.pitch)*(360.f/65536.f),1,0,0);glRotatef((c?c->roll:play.movement.lean)*(360.f/65536.f),0,0,1);
         }
     }
-    int intensity=-1;for(size_t i=0;i<level->item_count;i++)if(level->items[i].object==0){intensity=level->items[i].intensity;break;}
+    int intensity=level->items[start.item_index].intensity;
     actor_lighting(actor,&a,intensity,pose_mode?0:play.lara.pitch,pose_mode?0:play.movement.lean);
     GLfloat base[16];glGetFloatv(GL_MODELVIEW_MATRIX,base);
     glTranslatef(a.root[0]+fraction*(b.root[0]-a.root[0]),a.root[1]+fraction*(b.root[1]-a.root[1]),a.root[2]+fraction*(b.root[2]-a.root[2]));
@@ -1078,6 +1081,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     free(cinematic_pixels);cinematic_pixels=NULL;
     if(next_number<0 || next_number>=LEVEL_CHOICE_COUNT)return 0;
     char path[MAX_PATH],error[256]={0};game_level_path(path,next_number);
+    if(custom_campaign_id)custom_log_error(custom_campaign_id,"Loading Game/level.phd");
     TombLevel *next=tomb_level_load(path,error,sizeof error);TombVisual *view=NULL;
     if(next)next->music_edition=music_source()==0?2:1;
     TombObjects world={0};TombPlaytest player;TombLaraStart spawn;TombScreenRect *rects=NULL;
@@ -1085,6 +1089,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
        !(rects=calloc(next->room_count,sizeof *rects)) || !tomb_objects_init(&world,next,view) ||
        !tomb_playtest_init(&player,next,sine_table,view)) {
         tomb_objects_free(&world);free(rects);tomb_visual_free(view);tomb_level_free(next);
+        if(custom_campaign_id){custom_log_error(custom_campaign_id,*error?error:"Failed to initialise level objects, spawn or player");MessageBoxA(NULL,"Could not play this level. See its Custom folder for import.log.","Custom Levels",MB_ICONERROR);return 0;}
         MessageBoxA(NULL,"Could not load the next level. Check that its converted level file is installed.","Next level",MB_ICONERROR);return 0;
     }
     TombFollowCamera saved_camera={0};TombInventory saved_baseline={0};
@@ -1145,9 +1150,10 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     if(!saved && !front_test && !transition_test){
         const char *movie=next_number==0?"MANSION":next_number==1?"SNOW":next_number==5?"LIFT":next_number==10?"VISION":next_number==13?"CANYON":next_number==14?"PYRAMID":NULL;
         if(movie)play_movie(movie,0);
-    }autosave_reset(!saved);return 1;
+    }autosave_reset(!saved);if(custom_campaign_id)custom_log_error(custom_campaign_id,"Entered gameplay");return 1;
 }
 static int load_next_level(void){
+ if(custom_campaign_id){frontend_title();return 1;}
  if(campaign_selected==CAMPAIGN_COMBINED && level_number>0){
   if(level_number==15)return load_game_level(18,1,NULL);
   if(level_number==19){if(!front_test && !transition_test)play_movie("END",0);return load_game_level(16,1,NULL);}
@@ -1366,7 +1372,7 @@ static void overlay(void) {
         if(overlay_pass!=2 && title_mode)frontend_backdrop();
         if(complete) {
             char lines[4][80];tomb_statistics(play.inventory.ticks,play.pistols.kills,play.inventory.pickups,objects.progress->secrets,tomb_level_secret_total(level_number),lines);
-            if(overlay_pass!=1){ui_text(0,-50,level_choices[level_number].name,TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
+            if(overlay_pass!=1){ui_text(0,-50,game_level_name(level_number),TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
             for(int i=0;i<4;i++)ui_text(0,-20+30*i,lines[i],TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);}
         } else {
             if(overlay_pass!=2 && !new_game_menu)draw_inventory_ring();
@@ -1392,7 +1398,7 @@ static void overlay(void) {
     }
     if(overlay_pass!=1 && !title_mode && !cinema_mode && !complete && !inventory_open &&
        level_name_time>0 && detail_notice_time<=0 && (play.gameplay_options&TOMB_SHOW_LEVEL_NAME))
-        ui_text(0,-24,level_choices[level_number].name,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
+        ui_text(0,-24,game_level_name(level_number),TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
     if(overlay_pass!=1 && !title_mode && !cinema_mode && detail_notice_time>0){
         double scale=ui_scale();
         TombTextStyle style={0,0,65536,65536,1,6,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM};

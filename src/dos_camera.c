@@ -83,11 +83,27 @@ static void clip(int32_t *p,int32_t *q,int32_t tp,int32_t tq,int32_t bound,int32
         *q=near;
     }
 }
+/* Some custom rooms have no navigation boxes even in open space. */
+static int open_boxless_target(const TombLevel *l,const TombCameraPoint *target) {
+    TombSectorRef ref;
+    if(!tomb_find_sector(l,target->x,target->y,target->z,target->room,&ref) || ref.room!=target->room)return 0;
+    const TombRoom *room=l->rooms+ref.room;
+    int x=tomb_asr(target->x-room->x,10),z=tomb_asr(target->z-room->z,10);
+    if(x<0 || x>=room->nx || z<0 || z>=room->nz || ref.index!=x*room->nz+z)return 0;
+    const TombSector *s=room->sectors+ref.index;
+    return s->box==UINT16_MAX &&
+           s->floor!=-127 && s->ceiling!=-127 && s->floor>s->ceiling;
+}
 static int adjust(const TombLevel *l,const TombCameraPoint *target,TombCameraPoint *p,int32_t r2,int heavy,int looking) {
     void (*edge)(int32_t *,int32_t *,int32_t,int32_t,int32_t,int32_t,int32_t,int32_t,int32_t)=looking?clip:shift;
     tomb_dos_camera_los(l,target,p,heavy);
     const TombCameraBox *b=box(l,target),*ib=box(l,p);
-    if(!b)return 0;
+    if(!b){
+        /* LOS already shortened the desired offset at room obstructions.
+           With no authored edges, retain that point for normal smoothing. */
+        TombHeights h;
+        return open_boxless_target(l,target) && heights(l,p,heavy,&h);
+    }
     if(ib && (p->z<b->zmin || p->z>b->zmax || p->x<b->xmin || p->x>b->xmax))b=ib;
     int32_t edges[4]={b->zmin,b->zmax,b->xmin,b->xmax};int blocked[4];
     for(int side=0;side<4;side++) {
@@ -181,6 +197,7 @@ int tomb_dos_camera_tick_effects(TombDosCamera *c,const TombLevel *l,const TombA
         c->fixed=0;return 1;
     }
     int fixed=r->fixed_index>=0 && (size_t)r->fixed_index<l->camera_count;
+    if(fixed){int room=l->cameras[r->fixed_index].room;fixed=room>=0 && (size_t)room<l->room_count;}
     int item=fixed && r->item_target;int32_t y=a->y+(item?(b[2]+b[3])/2:b[3]+tomb_asr(3*(b[2]-b[3]),2));
     c->target.x=a->x;c->target.z=a->z;c->target.room=a->room;
     if(r->flags==1){int centre=(b[4]+b[5])/2;c->target.x+=tomb_asr(mul(centre,sn(s,a->yaw)),14);c->target.z+=tomb_asr(mul(centre,sn(s,a->yaw+16384)),14);}

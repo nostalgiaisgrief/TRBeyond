@@ -133,7 +133,7 @@ TombLevel *tomb_level_load(const char *path,char *error,size_t cap)
         l->cameras=calloc(n,sizeof *l->cameras);if(!l->cameras)goto fail;
         for(size_t i=0;i<n;i++,p+=16) {
             l->cameras[i]=(TombFixedCamera){s32(p),s32(p+4),s32(p+8),s16(p+12),u16(p+14)};
-            if(l->cameras[i].room<0 || (size_t)l->cameras[i].room>=l->room_count)goto fail;
+            /* The shared DOS table also contains sinks and unused camera records. */
         }
     }
     l->sound_sources_offset=r.pos;

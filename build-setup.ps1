@@ -24,6 +24,8 @@ try {
     $payload=Join-Path $PSScriptRoot 'build/setup-bundle/payload'
     New-Item -ItemType Directory -Path $payload -Force | Out-Null
     Copy-Item -LiteralPath build/tomb_preview.exe -Destination "$payload/TombRaiderBeyond.exe" -Force
+    & (Join-Path $PSScriptRoot 'tools/build-custom-import.ps1') -Python $Python
+    Copy-Item -LiteralPath build/TRCustomImport.exe -Destination "$payload/TRCustomImport.exe" -Force
     $legacyPayload = Join-Path $payload 'Tomb Raider Beyond.exe'
     if (Test-Path -LiteralPath $legacyPayload) { Remove-Item -LiteralPath $legacyPayload }
     Copy-Item -LiteralPath third_party/openxr/bin/openxr_loader.dll -Destination "$payload/openxr_loader.dll" -Force

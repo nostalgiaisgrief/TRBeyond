@@ -20,7 +20,7 @@ LEVELS = ['GYM', 'TITLE', 'CUT1', 'CUT2', 'CUT3', 'CUT4', 'LEVEL1', 'LEVEL2',
 MOVIES = ['CAFE', 'CANYON', 'CORE', 'END', 'ESCAPE', 'LIFT', 'MANSION',
           'PRISON', 'PYRAMID', 'SNOW', 'VISION']
 PICTURES = ['TITLEH', 'END', 'CRED1', 'CRED2', 'CRED3']
-RUNTIME_FILES = ['TombRaiderBeyond.exe', 'openxr_loader.dll', 'OPENXR-LICENSE.txt', 'SDL3.dll', 'SDL3-LICENSE.txt']
+RUNTIME_FILES = ['TombRaiderBeyond.exe', 'TRCustomImport.exe', 'openxr_loader.dll', 'OPENXR-LICENSE.txt', 'SDL3.dll', 'SDL3-LICENSE.txt']
 
 
 def bundled_campaign_files(payload):

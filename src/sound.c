@@ -85,8 +85,10 @@ static int spatial(TombSoundMixer *m,const int32_t xyz[3],int positional,int fla
     double dx=xyz[0]-listener[0],dy=xyz[1]-listener[1],dz=xyz[2]-listener[2];
     if(fabs(dx)>8192 || fabs(dy)>8192 || fabs(dz)>8192)return -1;
     int distance=(int)sqrt(dx*dx+dy*dy+dz*dz);
-    if((dx || dy || dz) && !(flags&0x1000))
-        *angle=tomb_word(tomb_object_angle((int32_t)(xyz[2]-m->origin[2]),(int32_t)(xyz[0]-m->origin[0]))-m->yaw);
+    if((dx || dy || dz) && !(flags&0x1000)){
+        int32_t pan_x=(int32_t)(xyz[0]-m->origin[0]),pan_z=(int32_t)(xyz[2]-m->origin[2]);
+        if(pan_x || pan_z)*angle=tomb_word(tomb_object_angle(pan_z,pan_x)-m->yaw);
+    }
     return distance;
 }
 static int same_source(const TombSoundVoice *v,const TombSoundEvent *e){

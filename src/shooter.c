@@ -415,6 +415,15 @@ void tomb_shooter_view_blend(const TombPlaytest *p,const double pos[3],double bl
         /* Animation root travel can lift the camera pivot through a ceiling
            before the actor changes rooms. A ray starting in solid space cannot
            retract the camera: first keep its origin inside the open column. */
+        const TombActor *actor=&p->lara.actor;
+        if(actor->current==19 || actor->current==54 || actor->current==55){
+            /* The open column on the hanging side connects the two storeys.
+               Beneath the platform the same lookup can only find its underside. */
+            double facing=actor->yaw*(6.283185307179586/65536);
+            TombCameraPoint outside={actor->x-(int32_t)(128*sin(facing)),pivot.y,
+                actor->z-(int32_t)(128*cos(facing)),actor->room};
+            if(ray_clear(p->level,&outside))pivot.room=outside.room;
+        }
         TombSectorRef ref;TombHeights h;
         if(tomb_find_sector(p->level,pivot.x,pivot.y,pivot.z,pivot.room,&ref) &&
            (p->level->items?tomb_item_heights(p->level,ref,pivot.x,pivot.y,pivot.z,0,

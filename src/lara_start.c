@@ -4,9 +4,9 @@ int tomb_lara_start(const TombLevel *l,TombLaraStart *out)
 {
     if(!l || !out || !l->items || !l->rooms || !l->animations) return 0;
     const TombItem *item=NULL; size_t index=0;
-    for(size_t i=0;i<l->item_count;++i) if(l->items[i].object==0) {
-        if(item) return 0;
-        item=l->items+i; index=i;
+    /* DOS registers each Lara in file order; the last one receives player control. */
+    for(size_t i=l->item_count;i>0;--i) if(l->items[i-1].object==0) {
+        index=i-1; item=l->items+index; break;
     }
     if(!item || index>32767 || item->flags || item->room<0 || (size_t)item->room>=l->room_count) return 0;
     const TombRoom *r=l->rooms+item->room;

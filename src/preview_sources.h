@@ -2,6 +2,17 @@
    TBL/BMV/WAV formats; raw PSX files are not yet supported by the loader. */
 #include "asset.h"
 static char install_root[MAX_PATH];
+static int custom_campaign_id;
+static void custom_path(char *path,int id,const char *relative){
+ snprintf(path,MAX_PATH,"%s/Custom/%d/%s",install_root,id,relative);
+}
+static const char *game_level_name(int number){
+ return level_choices[number].name;
+}
+static void custom_log_error(int id,const char *message){
+ char path[MAX_PATH];custom_path(path,id,"import.log");FILE *log=fopen(path,"a");
+ if(log){fprintf(log,"Entry %d: %s\n",id,message);fclose(log);}
+}
 static int campaign_selected,campaign_for_load;
 enum { CAMPAIGN_TR, CAMPAIGN_UB, CAMPAIGN_COMBINED };
 static int campaign_level_count(void){return campaign_selected==CAMPAIGN_UB?4:campaign_selected==CAMPAIGN_COMBINED?20:16;}

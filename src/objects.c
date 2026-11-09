@@ -147,11 +147,15 @@ static TombSector *get_sector(TombLevel *l,TombSectorRef r) {
     TombRoom *room=l->rooms+r.room;
     return r.index<0 || (size_t)r.index>=(size_t)room->nx*room->nz?NULL:room->sectors+r.index;
 }
-static int sector_at(TombLevel *l,int room,int32_t x,int32_t z,TombSectorRef *out) {
+static int door_sector_at(const TombLevel *l,int room,int32_t x,int32_t z,TombSectorRef *out) {
     if(room<0 || (size_t)room>=l->room_count)return 0;
-    TombRoom *r=l->rooms+room;int ix=tomb_asr(x-r->x,10),iz=tomb_asr(z-r->z,10);
-    if(ix<0 || iz<0 || ix>=r->nx || iz>=r->nz)return 0;
-    *out=(TombSectorRef){room,ix*r->nz+iz};return 1;
+    const TombRoom *r=l->rooms+room;
+    int32_t ix=tomb_asr(tomb_long((int64_t)x-r->x),10);
+    int32_t iz=tomb_asr(tomb_long((int64_t)z-r->z),10);
+    /* DOS door offsets can cross a row boundary within the same sector array. */
+    int64_t index=(int64_t)ix*r->nz+iz;
+    if(index<0 || index>INT32_MAX || index>=(int64_t)r->nx*r->nz)return 0;
+    *out=(TombSectorRef){room,(int32_t)index};return 1;
 }
 static int linked_room(const TombLevel *l,const TombSector *s) {
     size_t at=s->floor_index;if(!at)return 255;
@@ -164,10 +168,10 @@ static int linked_room(const TombLevel *l,const TombSector *s) {
     return at+1<l->floor_count?l->floor_data[at+1]:-1;
 }
 static int save_part(TombObjects *w,TombDoor *d,int room,int32_t x,int32_t z) {
-    TombSectorRef ref;if(!sector_at(w->level,room,x,z,&ref) || d->count==4)return 0;
+    TombSectorRef ref;if(!door_sector_at(w->level,room,x,z,&ref) || d->count==4)return 0;
     TombSector *s=get_sector(w->level,ref);int next=linked_room(w->level,s);if(next<0)return 0;
     int box=s->box;
-    if(next!=255){TombSectorRef other;if(!sector_at(w->level,next,x,z,&other))return 0;box=get_sector(w->level,other)->box;}
+    if(next!=255){TombSectorRef other;if(!door_sector_at(w->level,next,x,z,&other))return 0;box=get_sector(w->level,other)->box;}
     if(box<0 || (size_t)box>=w->level->box_count || !(w->level->boxes[box].overlap&0x8000))box=-1;
     d->parts[d->count++]=(TombDoorPart){ref,*s,box};return 1;
 }
@@ -350,6 +354,15 @@ static int trigger(TombObjects *w,size_t index,int grounded,int heavy,int weapon
     if((type==1 || type==6) && !grounded)return 1;
     if(l->floor_count-index<3)return 0;
     uint16_t flags=l->floor_data[index+1];size_t at=index+2;
+    /* DOS RefreshCamera reads the first trigger word before SwitchTrigger
+       consumes it as an item index. Some maps end the list on that word. */
+    if(type==2 && (l->floor_data[at]&0xfc00)==0x9800){
+        int id=l->floor_data[at]&1023;
+        if((size_t)id>=w->source_count)return 0;
+        if(!interrupt && w->camera.active!=5 &&
+           (!(w->items[id].actor.flags&64) || id==w->last_target))w->camera.target=id;
+        return 1;
+    }
     size_t switch_id=0;
     if(type==3){switch_id=l->floor_data[at++]&1023;if(switch_id>=w->count)return 0;}
     if(type==4){switch_id=l->floor_data[at++]&1023;if(switch_id>=w->count)return 0;}
@@ -361,7 +374,7 @@ static int trigger(TombObjects *w,size_t index,int grounded,int heavy,int weapon
         if(action==0 && id>=w->count)return 0;
         if(action==6 && id>=w->count)return 0;
         if(action==2 && (id>=l->camera_count || l->cameras[id].flags>=l->box_count))return 0;
-        if(action==1){if(id>=l->camera_count || at>=l->floor_count)return 0;word=l->floor_data[at++];}
+        if(action==1){if(id>=l->camera_count || at>=l->floor_count || l->cameras[id].room<0 || (size_t)l->cameras[id].room>=l->room_count)return 0;word=l->floor_data[at++];}
         if(word&0x8000){ended=1;break;}
     }
     if(!ended)return 0;
