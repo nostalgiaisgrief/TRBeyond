@@ -182,7 +182,10 @@ static int objects_collide(TombObjects *w,TombActor *a,TombContact *c,TombAnimCo
         /* The altar and EmberEmitter use DOS ObjectCollision (16388),
            including its mesh-sphere test before the bounds push. */
         if((solid && o->object!=83 && o->object!=147 && o->object!=177) || (o->object>=43 && o->object<=45))touching=1;
-        if(creature)creature->touch=touching;
+        if(creature && w->enemies->targets){
+            int player=a==&w->enemies->players[0]->actor?0:1;
+            w->enemies->targets[i].contact[player]|=touching;
+        }else if(creature)creature->touch=touching;
         if(hazard){
             w->enemies->items[i].touch=touching;
             /* Rolling balls push airborne Lara; stopped balls remain solid. */

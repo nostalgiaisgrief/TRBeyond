@@ -15,7 +15,7 @@ static void frontend_detail_cycle(int row,int forward){
     else if(row==3)settings_framerate=(settings_framerate+(forward?1:2))%3;
     else if(row==4){settings_full_colour=!settings_full_colour;if(!settings_full_colour)settings_texture_filtering=0;}
     else if(row==5){settings_texture_filtering=!settings_texture_filtering;if(settings_texture_filtering)settings_full_colour=1;}
-    else if(row==6)settings_draw_distance=(settings_draw_distance+(forward?1:2))%3;
+    else if(row==6)settings_draw_distance=(settings_draw_distance+(forward?1:DRAW_DISTANCE_COUNT-1))%DRAW_DISTANCE_COUNT;
     else if(row==7){static const int next[4]={3,2,0,1},previous[4]={2,3,1,0};settings_water_style=forward?next[settings_water_style]:previous[settings_water_style];}
 
  settings_preset=-1;
@@ -42,7 +42,7 @@ static int frontend_assets(void){
  glGenTextures(1,&title_backdrop);glBindTexture(GL_TEXTURE_2D,title_backdrop);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);free(rgb);return 1;
 }
 static void frontend_backdrop(void){
- int setup=(new_game_menu>=1 && new_game_menu<=3) || new_game_menu==5;
+ int setup=(new_game_menu>=1 && new_game_menu<=3) || new_game_menu==5 || (new_game_menu==COOP_WAIT_PAGE && menu_role==1);
  int campaign=new_game_menu==4?new_game_row:setup && !new_game_custom_id?campaign_selected:CAMPAIGN_TR;
  int ub=campaign==CAMPAIGN_UB,combined=campaign==CAMPAIGN_COMBINED;
  int entry_id=setup?new_game_custom_id:0;
@@ -156,10 +156,14 @@ static const FrontendGameplayOption customise_cheats_title[]={
 static const FrontendGameplayOption customise_cheats_game[]={
  {"Skip Level",0,-2},{"Invincibility",TOMB_INVINCIBLE,0},{"Infinite Ammo",TOMB_INFINITE_AMMO,0},{"Gun Power",0,-1},
  {"Give Pistol",0,1},{"Give Shotgun",0,2},{"Give Magnums",0,3},{"Give Uzis",0,4}};
+static const FrontendGameplayOption client_visual[]={{"3D Pickups",TOMB_3D_PICKUPS,0},{"Show Level Name",TOMB_SHOW_LEVEL_NAME,0}};
 static const FrontendGameplayOption customise_fun[]={
  {"No Enemies",TOMB_NO_ENEMIES,0},{"Double-Tap Jump to Swim",TOMB_DOUBLE_JUMP_SWIM,0},
  {"Climb Anything in VR",TOMB_VR_CLIMB_ANYTHING,0}};
 static const FrontendGameplayOption *frontend_gameplay_options(int starting,int *count){
+ if(starting && menu_role==2){*count=2;return client_visual;}
+ if(starting && menu_role==1 && customise_page==0){*count=3;return customise_quality+2;}
+ if(starting && menu_role==1 && customise_page==2){*count=2;return customise_fun;}
  if(customise_page==0){*count=starting?6:5;return customise_quality+(starting?0:1);}
  if(customise_page==2){*count=4;return customise_fun;}
  *count=starting?6:8;return starting?customise_cheats_title:customise_cheats_game;
@@ -171,7 +175,9 @@ static void frontend_gun_power(uint32_t *options,unsigned input){
  *options=(*options&~(uint32_t)TOMB_GUN_POWER_MASK)|((uint32_t)mode<<TOMB_GUN_POWER_SHIFT);
 }
 static void frontend_finish_preferences(void){
+ if(menu_role==2){new_game_menu=COOP_ADDRESS_PAGE;address_selected=1;menu_error[0]=0;return;}
  if(!new_game_custom_id){new_game_menu=5;return;}
+ if(menu_role==1){menu_coop_wait();return;}
  custom_campaign_id=new_game_custom_id;
  campaign_selected=CAMPAIGN_TR;new_game_menu=0;menu_action=2;
  tomb_ring_finish_item(&inventory_ring,71);
@@ -181,7 +187,7 @@ static void frontend_gameplay_input(int starting,int *row,unsigned input){
  if((input&16) && *row>=0)--*row;
  if((input&32) && *row<count-1+starting)++*row;
  if(*row<0){
-  if(input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))customise_page=(customise_page+((input&TOMB_RING_RIGHT)?1:2))%3;
+  if(!(starting && menu_role==2) && (input&(TOMB_RING_LEFT|TOMB_RING_RIGHT)))customise_page=(customise_page+((input&TOMB_RING_RIGHT)?1:2))%3;
   return;
  }
  if(starting && *row==count){if(input&TOMB_RING_SELECT)frontend_finish_preferences();return;}
@@ -242,13 +248,13 @@ static int frontend_input(unsigned *input){
     else frontend_gameplay_input(1,&new_game_row,*input);
     *input=0;return 0;
    }
-   int rows=new_game_menu==1?4:2;
+   int rows=new_game_menu==1?(menu_role?1:4):2;
    if(*input&16 && new_game_row>0)--new_game_row;
    if(*input&32 && new_game_row<rows-1)++new_game_row;
    if(*input&TOMB_RING_BACK){
     if(new_game_menu==2){new_game_menu=1;new_game_row=new_game_mode;}
     else if(new_game_custom_id){new_game_menu=CUSTOM_DETAILS;new_game_custom_id=0;}
-    else{new_game_menu=4;new_game_row=campaign_selected;}
+    else{new_game_menu=4;new_game_row=menu_role==2?-1:campaign_selected;}
     menu_error[0]=0;
    }
    else if(*input&TOMB_RING_SELECT){
@@ -260,11 +266,27 @@ static int frontend_input(unsigned *input){
    }
    *input=0;return 0;
   }
+  if(new_game_menu==COOP_WAIT_PAGE || new_game_menu==COOP_ADDRESS_PAGE){
+   if(*input&TOMB_RING_BACK || (new_game_menu==COOP_WAIT_PAGE && (*input&TOMB_RING_SELECT))){
+    if(new_game_menu==COOP_WAIT_PAGE){coop_lan_close();menu_session=0;new_game_menu=menu_role==2?COOP_ADDRESS_PAGE:new_game_custom_id?2:5;}
+    else{new_game_menu=2;new_game_row=new_game_custom;}
+    menu_error[0]=0;
+   }else if(new_game_menu==COOP_ADDRESS_PAGE && (*input&TOMB_RING_SELECT))menu_coop_wait();
+   *input=0;return 0;
+  }
   if(new_game_menu>=CUSTOM_LIST){custom_input(*input);*input=0;return 0;}
   if(new_game_menu==4){
-   if(*input&16 && new_game_row>0)--new_game_row;
-   if(*input&32 && new_game_row<3)++new_game_row;
+   if((*input&16) && new_game_row>(campaign_for_load?0:-1))--new_game_row;
+   if((*input&32) && new_game_row<3 && (campaign_for_load || menu_role!=2))++new_game_row;
+   if(new_game_row==-1 && (*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))){
+    menu_role=(menu_role+((*input&TOMB_RING_LEFT)?2:1))%3;
+    new_game_mode=0;new_game_options=0;new_game_custom=0;new_game_custom_id=0;menu_error[0]=0;
+   }
    if(*input&TOMB_RING_BACK){new_game_menu=0;new_game_row=0;campaign_for_load=0;menu_error[0]=0;}
+   else if((*input&TOMB_RING_SELECT) && new_game_row<0){
+    if(menu_role==2){new_game_menu=1;new_game_mode=new_game_row=0;new_game_custom_id=0;}
+    else new_game_row=0;
+   }
    else if((*input&TOMB_RING_SELECT) && new_game_row==3 && !campaign_for_load){
     menu_error[0]=0;new_game_menu=CUSTOM_LIST;
     custom_poll();if(!custom_page_data && !custom_query.thread)custom_fetch(1);
@@ -280,10 +302,11 @@ static int frontend_input(unsigned *input){
   }
   if(new_game_menu==5){
    int index=campaign_level_index(new_game_level),count=campaign_level_count();
-   if(*input&16 && index>0)--index;
+   if(*input&16 && index>(menu_role==1 && campaign_level_at(0)==0?1:0))--index;
    if(*input&32 && index<count-1)++index;
    new_game_level=campaign_level_at(index);
    if(*input&TOMB_RING_BACK){new_game_menu=new_game_custom?3:2;new_game_row=0;if(new_game_custom)frontend_gameplay_options(1,&new_game_row);}
+   else if((*input&TOMB_RING_SELECT) && menu_role==1)menu_coop_wait();
    else if(*input&TOMB_RING_SELECT){new_game_menu=0;menu_action=2;tomb_ring_finish_item(r,71);}
    *input=0;return 0;
   }
@@ -301,9 +324,9 @@ static int frontend_input(unsigned *input){
   if(direction){int next=page+direction;if(next>=(!any?1:0) && next<=2 && !((death_menu || frontend_save_blocked()) && next==1)){i->goal=(int16_t)(14+next*5);i->direction=(int16_t)direction;r->ready=0;r->sound=115;inventory_sound();}else if((death_menu || frontend_save_blocked()) && next==1){i->goal=(int16_t)(direction>0?24:14);i->direction=(int16_t)direction;r->ready=0;}*input=0;}
   else if(death_menu && (*input&TOMB_RING_BACK)){*input=0;}
   else if(*input&TOMB_RING_SELECT){
-   if(page==0 && title_mode){campaign_for_load=1;new_game_menu=4;new_game_row=CAMPAIGN_TR;}
+   if(page==0 && title_mode){menu_role=0;campaign_for_load=1;new_game_menu=4;new_game_row=CAMPAIGN_TR;}
    else if(page==0 || (page==1 && !title_mode && (level_number!=0 || passport_save))){frontend_open_slots(page);}
-   else if(page==1 && (title_mode || (level_number==0 && !passport_save))){campaign_for_load=0;new_game_menu=4;new_game_row=CAMPAIGN_TR;new_game_options=0;new_game_custom=0;new_game_custom_id=0;new_game_mode=0;new_game_level=1;menu_error[0]=0;}
+   else if(page==1 && (title_mode || (level_number==0 && !passport_save))){menu_role=0;campaign_for_load=0;new_game_menu=4;new_game_row=CAMPAIGN_TR;new_game_options=0;new_game_custom=0;new_game_custom_id=0;new_game_mode=0;new_game_level=1;menu_error[0]=0;}
    else{menu_action=page+1;tomb_ring_finish_item(r,71);}*input=0;
   }
  }else if(i->object==73 && !title_mode){
@@ -444,7 +467,7 @@ static void frontend_control_mode(const TombDialogEntry *entry,const char *name,
  double scale=ui_scale();
  TombTextStyle style={0,0,(int32_t)(scale*65536),(int32_t)(scale*65536),1,6,0};
  int span=tomb_text_width(name,&style),left=(width-span)/2+(int)(entry->x*scale);
- int y=height/2+(int)(entry->y*scale);
+ int y=(entry->flags&TOMB_TEXT_BOTTOM?height:height/2)+(int)(entry->y*scale);
  TombTextGlyph arrow={108,left-(int)(24*scale),y,style.scale_x,style.scale_y};
  glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glColor3f(1,1,1);
  font_glyph(NULL,&arrow);arrow.glyph=109;arrow.x=left+span+(int)(10*scale);font_glyph(NULL,&arrow);
@@ -456,7 +479,7 @@ static void frontend_gameplay_overlay(int starting,int selected){
  TombDialogEntry panel={0,top,TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE,400,64+rows*18};
  frontend_entry(&panel," ",0);
  TombDialogEntry heading={0,top+14,TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE,0,0};
- frontend_control_mode(&heading,customise_pages[customise_page],selected<0);
+ if(starting && menu_role==2)frontend_entry(&heading,"ENHANCEMENTS",0);else frontend_control_mode(&heading,customise_pages[customise_page],selected<0);
  uint32_t bits=starting?new_game_options:play.gameplay_options;
  for(int row=0;row<count+starting;row++){
   char text[100];
@@ -487,7 +510,7 @@ static void frontend_overlay(void){
   if(new_game_menu && new_game_menu<4){
    static const char *modes[]={"Original","Third Person Shooter","First Person Shooter","Virtual Reality"};
    if(new_game_menu==3){frontend_gameplay_overlay(1,new_game_row);return;}
-   int rows=new_game_menu==1?4:2;
+   int rows=new_game_menu==1?(menu_role?1:4):2;
    tomb_dialog_layout(71,new_game_row,1,entries);
    entries[0].panel_width=380;entries[0].panel_height=40+18*rows;entries[1].panel_width=376;
    frontend_entry(entries," ",0);frontend_entry(entries+1,new_game_menu==1?"Select Mode":new_game_menu==2?"Select Gameplay":"Customise Gameplay",0);
@@ -498,21 +521,38 @@ static void frontend_overlay(void){
     if(entries[row+2].panel_width)entries[row+2].panel_width=360;frontend_entry(entries+row+2,text,0);
    }if(menu_error[0])ui_text(0,-40,menu_error,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);return;
   }
+  if(new_game_menu==COOP_ADDRESS_PAGE || new_game_menu==COOP_WAIT_PAGE){
+   tomb_dialog_layout(71,0,1,entries);entries[0].panel_height=78;
+   frontend_entry(entries," ",0);
+   int address=new_game_menu==COOP_ADDRESS_PAGE;
+   frontend_entry(entries+1,address?"Host IPv4 Address":menu_role==1?"Waiting for Client...":"Connecting to Host...",0);
+   frontend_entry(entries+2,address?host_address:"Cancel",0);
+   if(address)frontend_entry(entries+3,"Enter to connect",0);
+   if(menu_error[0])ui_text(0,-40,menu_error,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);return;
+  }
   if(new_game_menu>=CUSTOM_LIST){custom_overlay();return;}
   if(new_game_menu==4){
    static const char *names[]={"Tomb Raider","Unfinished Business","Combined","Custom"};
-   tomb_dialog_layout(71,new_game_row,1,entries);entries[0].panel_height=112;
+   int offset=!campaign_for_load;
+   int campaigns=offset && menu_role==2?0:4;
+   tomb_dialog_layout(71,new_game_row+offset,1,entries);entries[0].panel_height=40+18*(campaigns+offset);
    frontend_entry(entries," ",0);frontend_entry(entries+1,"Select Campaign",0);
-   for(int row=0;row<4;row++)frontend_entry(entries+row+2,names[row],0);
+   if(offset){
+    static const char *roles[]={"Singleplayer","Multiplayer Host","Multiplayer Client"};
+    frontend_control_mode(entries+2,roles[menu_role],new_game_row<0);
+   }
+   for(int row=0;row<campaigns;row++)frontend_entry(entries+row+2+offset,names[row],0);
    if(menu_error[0])ui_text(0,-40,menu_error,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);return;
   }
   if(new_game_menu==5){
    int index=campaign_level_index(new_game_level),end=campaign_level_count();
-   int first=index>=10?index-9:0;
+   int minimum=menu_role==1 && campaign_level_at(0)==0?1:0;
+   int first=index-minimum>=10?index-9:minimum;
    tomb_dialog_layout(71,index-first,1,entries);
    frontend_entry(entries," ",0);frontend_entry(entries+1,"Choose Starting Level",0);
    for(int row=0;row<10 && first+row<end;row++)frontend_entry(entries+row+2,level_choices[campaign_level_at(first+row)].name,0);
-   if(first>0)ui_text(0,-282,"[",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
+   if(menu_error[0])ui_text(0,-40,menu_error,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
+   if(first>minimum)ui_text(0,-282,"[",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
    if(first+10<end)ui_text(0,-88,"]",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
    return;
   }

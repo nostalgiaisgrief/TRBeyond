@@ -11,6 +11,9 @@ int tomb_pickups_tick(TombPlaytest *p,uint32_t input) {
         for(int id=w->enemies->room_head[room];id>=0;id=w->enemies->room_next[id]) {
             TombObject *o=w->items+id;if(o->object==143 || !tomb_pickup_object(o->object))continue;
             if(llabs((long long)p->lara.actor.x-o->actor.x)>=4096 || llabs((long long)p->lara.actor.y-o->actor.y)>=4096 || llabs((long long)p->lara.actor.z-o->actor.z)>=4096)continue;
+            if(w->pickup_claims && (w->pickup_claims[id]&p->pickup_bit))continue;
+            uint8_t old_flags=o->actor.flags;
+            int old_active=o->active;
             int result=0;
             if(p->shooter.mode==TOMB_MODE_FPS && o->object!=144){
                 TombActor *a=&p->lara.actor;
@@ -20,7 +23,18 @@ int tomb_pickups_tick(TombPlaytest *p,uint32_t input) {
             }else result=tomb_pickup_contact(o,&p->lara.actor,&p->animation,input,p->lara.water_status,&p->lara.pitch,&p->movement.lean);
             if(result<0)return 0;
             if(p->lara.water_status){p->lara.lean=p->movement.lean;p->water.pitch=p->lara.pitch;p->water.lean=p->lara.lean;}
-            if(result==2){int collected=o->object;tomb_inventory_add(&p->inventory,collected);p->inventory.pickups=(p->inventory.pickups+1)&255;p->inventory.last_pickup=collected;p->inventory.pickup_ticks=75;tomb_hud_pickup(&p->hud,collected);tomb_pickups_replace_owned(w,&p->inventory);}
+            if(result==2){int collected=o->object;
+                if(w->pickup_claims){
+                    if(collected>=84 && collected<=94){
+                        w->pickup_claims[id]|=p->pickup_bit;
+                        if(w->pickup_claims[id]!=3){o->actor.flags=old_flags;o->active=old_active;}
+                        if(collected>=85 && collected<=87 && p->inventory.counts[collected-84])collected+=4;
+                    }else{
+                        w->pickup_claims[id]=3;
+                        tomb_inventory_add(&p->coop_partner->inventory,collected);
+                    }
+                }
+                tomb_inventory_add(&p->inventory,collected);p->inventory.pickups=(p->inventory.pickups+1)&255;p->inventory.last_pickup=collected;p->inventory.pickup_ticks=75;tomb_hud_pickup(&p->hud,collected);tomb_pickups_replace_owned(w,&p->inventory);}
         }
     }
     return 1;

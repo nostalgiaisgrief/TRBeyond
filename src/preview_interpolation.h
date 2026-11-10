@@ -74,7 +74,7 @@ static int render_object_visible(size_t index){
     return 0;
 }
 static int render_capture(void){
-    size_t count=1+2*objects.count+TOMB_DART_CAPACITY+256;
+    size_t count=1+2*objects.count+TOMB_DART_CAPACITY+256+(coop_mode?1:0);
     if(render_count!=count){render_reset();render_tracks=calloc(count,sizeof *render_tracks);if(!render_tracks)return 0;render_count=count;}
     render_tick++;render_recording=1;
     TombLighting saved_light=model_light;GLdouble saved_view[16];memcpy(saved_view,lighting_view,sizeof saved_view);

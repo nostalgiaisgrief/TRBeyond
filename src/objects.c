@@ -224,10 +224,14 @@ static int item_reset(TombObjects *w,size_t i) {
     w->level->items[i].state=o->actor.current;w->level->items[i].state_known=1;
     return 1;
 }
-int tomb_objects_init(TombObjects *w,TombLevel *l,const TombVisual *v) {
+int tomb_objects_init(TombObjects *w,TombLevel *l,const TombVisual *v){
+    return tomb_objects_init_session(w,l,v,0);
+}
+int tomb_objects_init_session(TombObjects *w,TombLevel *l,const TombVisual *v,int coop) {
     memset(w,0,sizeof *w);w->camera.index=w->camera.last=w->camera.target=w->last_target=-1;w->level=l;w->visual=v;w->count=l->item_count;
     w->source_count=l->item_count;
     int reserve=0;for(size_t i=0;i<l->item_count;i++){int id=l->items[i].object;if(id==161 || id==163 || id==181 || id==28 || (id>=30 && id<=32))reserve=128;}
+    if(coop)for(size_t i=0;i<l->item_count;i++)if(l->items[i].object==6)++reserve;
     if(reserve){
         TombItem *items=realloc(l->items,(l->item_count+(size_t)reserve)*sizeof *items);if(!items)return 0;l->items=items;
         for(int j=0;j<reserve;j++){TombItem *item=items+l->item_count+(size_t)j;memset(item,0,sizeof *item);item->object=-1;}
@@ -280,7 +284,7 @@ void tomb_objects_reset(TombObjects *w) {
 void tomb_objects_free(TombObjects *w) {
     if(w->level)restore(w);
     if(w->current){tomb_navigation_free(w->current);free(w->current);}
-    tomb_enemies_free(w);free(w->items);free(w->doors);free(w->box_overlap);free(w->hazards);free(w->progress);free(w->peru);if(w->level)w->level->item_count=w->source_count;memset(w,0,sizeof *w);
+    tomb_enemies_free(w);free(w->pickup_claims);free(w->items);free(w->doors);free(w->box_overlap);free(w->hazards);free(w->progress);free(w->peru);if(w->level)w->level->item_count=w->source_count;memset(w,0,sizeof *w);
 }
 int tomb_objects_spawn(TombObjects *w,int object,const TombActor *origin){
     TombModel model;if(!tomb_pickup_object(object) && !tomb_visual_model(w->visual,object,&model))return -1;

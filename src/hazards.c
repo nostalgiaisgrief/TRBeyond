@@ -66,23 +66,31 @@ static int missile_tick(TombObjects *w,TombHazardEffect *e,TombAnimContext *ctx,
     TombSectorRef ref;TombHeights h;
     if(!tomb_find_sector(w->level,e->x,e->y,e->z,e->room,&ref) || !tomb_item_heights(w->level,ref,e->x,e->y,e->z,0,w->level->items,w->count,&h))return 0;
     int wall=e->y>=h.floor || e->y<=h.ceiling;
-    int64_t dx=(int64_t)e->x-lara->x,dy=(int64_t)e->y-lara->y,dz=(int64_t)e->z-lara->z;
-    int damage=0,sound=-1,id=e->id;
+    int sound=-1,id=e->id;
     if(wall){
         if(id==172){e->id=164;e->frame=(int16_t)(tomb_control_random(&w->enemies->random)/11000);e->counter=6;sound=10;}
-        else {e->id=151;e->frame=e->counter=0;sound=104;int64_t distance=dx*dx+dy*dy+dz*dz;if(distance<0x100000)damage=(int)((0x100000-distance)*100/0x100000);}
+        else {e->id=151;e->frame=e->counter=0;sound=104;}
         e->speed=0;
-    }else{
-        e->room=(int16_t)ref.room;
-        int16_t b[6];if(!tomb_visual_bounds(w->visual,lara,b))return 0;
-        if(abs((int)dx)<=200 && abs((int)dz)<=200 && dx*dx+dz*dz<=40000 && llabs(dy)<=3072 && dy>=b[2] && dy<=b[3]+100){
+    }else e->room=(int16_t)ref.room;
+    int paired=w->enemies && w->enemies->targets;
+    for(int i=0;i<(paired?2:1);i++){
+        if(paired){lara=&w->enemies->players[i]->actor;health=&w->enemies->players[i]->health;if(*health<=0)continue;}
+        int64_t dx=(int64_t)e->x-lara->x,dy=(int64_t)e->y-lara->y,dz=(int64_t)e->z-lara->z;
+        int damage=0;
+        if(wall){
+            int64_t distance=dx*dx+dy*dy+dz*dz;
+            if(id!=172 && distance<0x100000)damage=(int)((0x100000-distance)*100/0x100000);
+        }else{
+            int16_t b[6];if(!tomb_visual_bounds(w->visual,lara,b))return 0;
+            if(llabs(dx)>200 || llabs(dz)>200 || dx*dx+dz*dz>40000 || llabs(dy)>3072 || dy<b[2] || dy>b[3]+100)continue;
             damage=id==172?30:100;e->id=(int16_t)(id==172?158:151);sound=id==172?50:104;
             e->frame=e->counter=0;e->speed=lara->speed;e->yaw=lara->yaw;
             if(!w->invincible && id!=172 && *health>damage && ctx->event){ctx->event(ctx->user,5,31,lara);ctx->event(ctx->user,12,(int16_t)(e-w->hazards->effects+1),lara);}
         }
+        if(damage && w->invincible && e->id==158){e->active=0;sound=-1;}
+        if(damage && !w->invincible){*health=tomb_word(*health-damage);lara->flags|=16;}
+        if(!wall)break;
     }
-    if(damage && w->invincible && e->id==158){e->active=0;sound=-1;}
-    if(damage && !w->invincible){*health=tomb_word(*health-damage);lara->flags|=16;}
     if(sound>=0 && ctx->event){TombActor a=*lara;a.x=e->x;a.y=e->y;a.z=e->z;a.room=e->room;ctx->event(ctx->user,5,(int16_t)sound,&a);}
     return 1;
 }
@@ -137,7 +145,9 @@ static int body_tick(TombObjects *w,TombDart *part,TombAnimContext *ctx,TombActo
     TombSectorRef ref;TombHeights h;if(!tomb_find_sector(w->level,a->x,a->y,a->z,a->room,&ref) || !tomb_item_heights(w->level,ref,a->x,a->y,a->z,0,w->level->items,w->count,&h))return 0;
     if(a->y<h.ceiling){a->y=h.ceiling;a->fall_speed=tomb_word(-a->fall_speed);}
     int hit=a->y>=h.floor,hit_lara=0;
-    if(!hit){
+    int paired=w->enemies && w->enemies->targets;
+    for(int i=0;!hit && i<(paired?2:1);i++){
+        if(paired){lara=&w->enemies->players[i]->actor;health=&w->enemies->players[i]->health;if(*health<=0)continue;}
         int64_t dx=(int64_t)a->x-lara->x,dz=(int64_t)a->z-lara->z;int dy=a->y-lara->y,radius=2*a->animation;int16_t b[6];if(!tomb_visual_bounds(w->visual,lara,b))return 0;
         hit=llabs(dx)<=radius && llabs(dz)<=radius && dx*dx+dz*dz<=(int64_t)radius*radius && abs(dy)<=3072 && dy>=b[2] && dy<=b[3]+100;
         hit_lara=hit;if(hit && !w->invincible){*health=tomb_word(*health-part->item.timer);lara->flags|=16;}

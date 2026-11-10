@@ -4,7 +4,7 @@
 #include <string.h>
 /* DOS Item_Replace 0x24d00: all placed copies, including later acquisitions. */
 void tomb_pickups_replace_owned(TombObjects *w,const TombInventory *inv){
-    if(!w)return;
+    if(!w || w->pickup_claims)return;
     for(size_t i=0;i<w->count;i++){
         TombObject *o=w->items+i;
         if(o->object>=85 && o->object<=87 && inv->counts[o->object-84])o->object+=4;

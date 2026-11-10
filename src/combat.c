@@ -92,6 +92,18 @@ void tomb_combat_target(TombPlaytest *p,int action) {
     if(action)target_info(p);else p->pistols.target=-1;
     if(p->pistols.target<0)acquire(p);
 }
+static int apply_weapon_hit(TombPlaytest *p,int id,int weapon){
+    TombObjects *w=p->objects;
+    TombObject *o=w->items+id;
+    TombCreature *c=w->enemies->items+id;
+    if(w->enemies->targets && o->object==6 && c->flags==-2)return 0;
+    int damage=tomb_gun_damage(p->gameplay_options,weapon,c->health);
+    int survives=w->enemies->targets && (o->object==6 || (o->object==28 && !(o->flags&0x100)));
+    if(!survives && c->health>0 && damage>=c->health)++p->pistols.kills;
+    ++p->pistols.hits;c->health=tomb_word(c->health-damage);o->actor.flags|=16;
+    tomb_enemy_hit(w,(size_t)id,&p->lara);
+    return 1;
+}
 static int fire(void *user,int16_t yaw,int16_t pitch) {
     TombPlaytest *p=user;TombPistols *g=&p->pistols;TombObjects *w=p->objects;TombEnemies *e=w->enemies;TombActor *a=&p->lara.actor;
     if((p->weapon_type==2 || p->weapon_type==3) && !(p->gameplay_options&TOMB_INFINITE_AMMO)){
@@ -123,8 +135,8 @@ static int fire(void *user,int16_t yaw,int16_t pitch) {
         }
         int id=tomb_shooter_ray(p,origin,angles[0],angles[1],&hit);got=id>=0;o=got?w->items+id:NULL;c=got?e->items+id:NULL;
     }
-    if(got){int damage=tomb_gun_damage(p->gameplay_options,p->weapon_type,c->health);++g->hits;if(c->health>0 && c->health<=damage)++g->kills;c->health=tomb_word(c->health-damage);o->actor.flags|=16;}
-    else if(!p->shooter.mode || tomb_shooter_lock_on(p))tomb_dos_camera_los(p->level,&origin,&hit,0);
+    if(got)got=apply_weapon_hit(p,(int)(o-w->items),p->weapon_type);
+    if(!got && (!p->shooter.mode || tomb_shooter_lock_on(p)))tomb_dos_camera_los(p->level,&origin,&hit,0);
     TombActor point={0};point.x=hit.x;point.y=hit.y;point.z=hit.z;point.room=got?o->actor.room:hit.room;
     int effect=tomb_effect_spawn(w,got?158:164,&point,got?o->actor.speed:0,got?o->actor.yaw:0);
     if(!got && effect>=0) {
@@ -157,8 +169,7 @@ int tomb_vr_fire(TombPlaytest *p,int weapon,TombCameraPoint origin,int16_t yaw,i
     for(int i=0;i<pellets;i++){
         int16_t angles[2]={yaw,pitch};if(weapon==4)tomb_shotgun_spread(&p->objects->enemies->random,yaw,pitch,angles);
         TombCameraPoint hit;int id=tomb_shooter_ray(p,origin,angles[0],angles[1],&hit);++p->pistols.shots;
-        if(id>=0){TombCreature *c=p->objects->enemies->items+id;int damage=tomb_gun_damage(p->gameplay_options,weapon,c->health);
-            if(c->health>0 && c->health<=damage)++p->pistols.kills;c->health=tomb_word(c->health-damage);p->objects->items[id].actor.flags|=16;++p->pistols.hits;}
+        if(id>=0 && !apply_weapon_hit(p,id,weapon))id=-1;
         TombActor point={0};point.x=hit.x;point.y=hit.y;point.z=hit.z;point.room=hit.room;
         int effect=tomb_effect_spawn(p->objects,id>=0?158:164,&point,0,0);
         if(id<0 && effect>=0)p->objects->hazards->effects[effect].counter=4;

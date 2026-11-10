@@ -49,6 +49,8 @@ typedef struct TombPlaytest {
     TombPistols pistols;
     uint32_t last_input;
     TombInventory inventory;
+    struct TombPlaytest *coop_partner;
+    unsigned pickup_bit;
     TombHud hud;
     int quest_request,quest_latch;
     int weapon_type,requested_weapon; /* DOS types: 1 pistols, 4 shotgun. */
@@ -78,5 +80,6 @@ int tomb_fps_activate(TombPlaytest *,size_t);
 void tomb_gameplay_start(TombPlaytest *,uint32_t options);
 int tomb_playtest_init(TombPlaytest *,const TombLevel *,const int16_t *sine,const TombVisual *);
 /* Ground/air/climbing/water development harness. Unsupported services roll back movement. */
+int tomb_playtest_player_tick(TombPlaytest *,uint32_t input,int advance_world);
 int tomb_playtest_tick(TombPlaytest *,uint32_t input);
 #endif

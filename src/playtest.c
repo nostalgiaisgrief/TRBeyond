@@ -30,7 +30,10 @@ static void sound_request(TombPlaytest *p,int kind,int id,int environment,const 
 }
 static void event(void *user,int kind,int16_t id,TombActor *actor) {
     TombPlaytest *p=user;
-    if(kind==12){p->spasm_ticks=5;p->spasm_effect=id;}
+    if(kind==12){
+        if(p->coop_partner && actor==&p->coop_partner->lara.actor)p=p->coop_partner;
+        p->spasm_ticks=5;p->spasm_effect=id;
+    }
     else if(kind==5) {
         if(p->shooter.mode==TOMB_MODE_FPS && actor==&p->lara.actor &&
            (id==0 || ((id==34 || id==35 || id==36 || id==37 || id==52) && p->lara.water_status)))return;
@@ -780,7 +783,7 @@ static int fps_switches(TombPlaytest *p,int pressed){
     }
     return 1;
 }
-int tomb_playtest_tick(TombPlaytest *p,uint32_t input) {
+int tomb_playtest_player_tick(TombPlaytest *p,uint32_t input,int advance_world) {
     int fps_action=p->shooter.mode==TOMB_MODE_FPS && (input&64) && !(p->shooter.input&64);
     input=swim_toggle(p,input);
     input=tomb_shooter_input(p,input);
@@ -799,15 +802,15 @@ int tomb_playtest_tick(TombPlaytest *p,uint32_t input) {
     p->sound_count=0;
     p->camera_request=tomb_camera_control(p->lara.actor.current,p->lara.water_status,p->lara.pitch);
     if(p->objects)tomb_objects_camera_begin(p->objects);
-    if(p->objects && (!tomb_late_world_tick(p) || !tomb_midas_tick(p) || !tomb_folly_tick(p) || !tomb_atlantean_spawners_tick(p->objects,&p->animation,&p->lara.actor))){p->blocked=1;p->status="Folly object service unavailable";return 0;}
+    if(advance_world && p->objects && (!tomb_late_world_tick(p) || !tomb_midas_tick(p) || !tomb_folly_tick(p) || !tomb_atlantean_spawners_tick(p->objects,&p->animation,&p->lara.actor))){p->blocked=1;p->status="Folly object service unavailable";return 0;}
     TombCameraRequest object_camera=p->camera_request;
     int lava_camera=p->lara.health<=0 && object_camera.distance==3072 && object_camera.item_target>=0;
-    if(p->objects && !tomb_peru_hazards(p->objects,&p->animation,&p->lara.actor,&p->lara.health)){p->blocked=1;p->status="Peru object service unavailable";return 0;}
-    if(p->objects && !tomb_hazards_tick(p->objects,&p->animation,&p->lara.actor,&p->lara.health)) {p->blocked=1;p->status="Hazard service unavailable";return 0;}
-    if(p->objects && !tomb_objects_tick(p->objects,&p->animation)) {
+    if(advance_world && p->objects && !tomb_peru_hazards(p->objects,&p->animation,&p->lara.actor,&p->lara.health)){p->blocked=1;p->status="Peru object service unavailable";return 0;}
+    if(advance_world && p->objects && !tomb_hazards_tick(p->objects,&p->animation,&p->lara.actor,&p->lara.health)) {p->blocked=1;p->status="Hazard service unavailable";return 0;}
+    if(advance_world && p->objects && !tomb_objects_tick(p->objects,&p->animation)) {
         p->blocked=1;p->status="Object animation unavailable";return 0;
     }
-    if(p->objects && !tomb_enemies_tick(p->objects,&p->animation,&p->lara)) {
+    if(advance_world && p->objects && !tomb_enemies_tick(p->objects,&p->animation,&p->lara)) {
         p->blocked=1;p->status="Enemy service unavailable";return 0;
     }
     int ok;
@@ -963,4 +966,8 @@ int tomb_city_fixture(TombPlaytest *p,TombObjects *w,const int16_t *s,int which)
   p->animation.move_angle=a->yaw;TombSectorRef ref;if(tomb_find_sector(w->level,a->x,a->y,a->z,a->room,&ref))a->room=(int16_t)ref.room;return 1;
  }
  return 0;
+}
+
+int tomb_playtest_tick(TombPlaytest *p,uint32_t input){
+    return tomb_playtest_player_tick(p,input,1);
 }

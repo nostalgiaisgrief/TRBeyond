@@ -31,6 +31,8 @@
 #include "level_select.h"
 #include "city.h"
 #include "save.h"
+#include "coop_lan.h"
+#include "coop_caves.h"
 #include "cinematic.h"
 #include "movie.h"
 
@@ -39,14 +41,31 @@ static TombVisual *visual;
 static TombLevel *level;
 static TombLaraStart start;
 static GLuint *tiles;
-static TombPlaytest play;
+static TombPlaytest play,partner;
+static CavesCoop coop;
+static unsigned coop_pack_request;
+static int coop_mode,coop_connected,laura_mesh=-1;
+static uint32_t coop_signature,coop_camera_random=1;
 /* Borrow the preceding level resources only while its cinematic is playing. */
 static TombVisual *cinematic_equipment;
 static GLuint *cinematic_equipment_tiles;
 static int cinematic_sidearm,cinematic_shotgun;
 
-static int settings_draw_distance=1; /* Original, maximum with fog, maximum without fog. */
-static const char *draw_distance_names[]={"Original","Max Surfaces With Fog","Max Surfaces No Fog"};
+enum { DRAW_ORIGINAL, DRAW_NO_FOG, DRAW_MAX_FOG, DRAW_SMOOTH_FOG, DRAW_DISTANCE_COUNT };
+static int settings_draw_distance=DRAW_SMOOTH_FOG;
+static const char *draw_distance_names[DRAW_DISTANCE_COUNT]={"Original","Max Distance","Max Distance with Fog","Max Distance with Smooth Fog"};
+static int extended_fog_enabled(void){
+    return settings_draw_distance==DRAW_MAX_FOG || settings_draw_distance==DRAW_SMOOTH_FOG;
+}
+static int camera_distance(double x,double y,double z){
+    return (int)sqrt(x*x+y*y+z*z);
+}
+static int max_distance_fog_shade(int shade,int depth){
+    const int fog_limit=7987;
+    if(depth<=12288 || shade>=fog_limit)return shade;
+    int darkness=depth-12288;
+    return darkness>=fog_limit-shade?fog_limit:shade+darkness;
+}
 static double world_far_distance=20480;
 static double world_far_plane(void){
  if(settings_draw_distance==0)return 20480;
@@ -138,6 +157,14 @@ static int title_mode,options_ring,death_menu,slot_menu,slot_current,menu_action
 static int new_game_menu,new_game_level=1;
 static int new_game_row,new_game_custom,new_game_mode,controls_page;
 static int new_game_custom_id;
+enum { COOP_ADDRESS_PAGE=9,COOP_WAIT_PAGE };
+static int menu_role,menu_session,setup_stage,address_selected;
+static uint32_t session_offer[3],peer_offer[3],build_signature;
+static char host_address[16]="127.0.0.1";
+#define COOP_VISUAL_OPTIONS (TOMB_3D_PICKUPS|TOMB_SHOW_LEVEL_NAME)
+static void menu_coop_wait(void);
+static int menu_coop_poll(HWND);
+static void menu_coop_leave(HWND window,const char *reason);
 static unsigned shooter_bindings[9]={'W','S','A','D',VK_SHIFT,VK_SPACE,VK_LBUTTON,VK_RBUTTON,'E'};
 static unsigned fps_bindings[10]={'W','S','A','D',VK_SHIFT,VK_SPACE,'E',VK_LBUTTON,VK_RBUTTON,VK_TAB};
 static const char *fps_binding_names[10]={"Forward","Back","Left","Right","Walk","Jump","Action","Shoot","Weapon Mode","Inventory"};
@@ -151,7 +178,7 @@ static int settings_framerate=0,settings_vsync=1,settings_force43=0;
 static const char *visual_style_names[]={"PS1","DOS","DOS 3DFX","PS1 Colour with DOS Effect"};
 static const char *preset_names[]={"Optimal","DOS","DOS 3DFX","PS1"};
 static int settings_water_style=3,settings_preset=0;
-static int settings_full_colour=0,settings_texture_filtering=0;
+static int settings_full_colour=1,settings_texture_filtering=0;
 static int water_ps1_colour(void){return settings_water_style==0 || settings_water_style==3;}
 static int water_tint(int wet){return water_ps1_colour()?(water_eye || wet?2:0):settings_water_style==2?(water_eye || wet?1:0):water_eye;}
 static int front_capture,front_test,autosave_switch_test;
@@ -305,6 +332,12 @@ static void sound_tick(void) {
       if(music_source()!=0 && music_selected!=source_selected && play.sounds[i].kind==5 && play.sounds[i].id==173)secrets[ns++]=play.sounds[i];
       else effects[ne++]=play.sounds[i];
     }
+    if(coop_connected){
+        for(unsigned j=0;j<partner.sound_count && ne<TOMB_SOUND_EVENTS;j++){
+            TombSoundEvent event=partner.sounds[j];
+            if(event.kind==5 && event.id!=173)effects[ne++]=event;
+        }
+    }
     if(ns)speech_samples();
     tomb_sound_output_spatial_frame(sound_output,effects,ne,objects.peru && objects.peru->flipped,wet,listener,origin,yaw);
     if(speech_effect_output)tomb_sound_output_spatial_frame(speech_effect_output,secrets,ns,0,wet,listener,origin,yaw);
@@ -450,8 +483,12 @@ static void update_camera(double dt) {
         TombActor impact={0};impact.x=play.sounds[i].x;impact.y=play.sounds[i].y;impact.z=play.sounds[i].z;
         camera_bounce=tomb_dos_camera_stomp(&camera.dos.eye,&impact,camera_bounce);
     }
-    TombActor focus=play.lara.actor;int object=0;TombCameraRequest r=play.camera_request;
-    r.pitch=play.lara.pitch;r.angle=tomb_word((int)r.angle+(int)(orbit*10430.378350470453));
+    int spectating=coop_connected && objects.pickup_claims && play.lara.health<=0 && partner.lara.health>0;
+    static int last_spectating;
+    if(spectating!=last_spectating){camera.ready=0;last_spectating=spectating;}
+    TombPlaytest *subject=spectating?&partner:&play;
+    TombActor focus=subject->lara.actor;int object=0;TombCameraRequest r=subject->camera_request;
+    r.pitch=subject->lara.pitch;r.angle=tomb_word((int)r.angle+(int)(orbit*10430.378350470453));
     if(distance!=1536)r.distance=(int32_t)distance;
     if(objects.camera.active && (objects.camera.active==5 || !(r.flags&(TOMB_CAMERA_COMBAT|TOMB_CAMERA_LOOK)))) {
         if(objects.camera.active==5)r.flags&=~(TOMB_CAMERA_COMBAT|TOMB_CAMERA_LOOK);
@@ -463,7 +500,7 @@ static void update_camera(double dt) {
         }
     }
     if(!camera.ready && (play.gameplay_options&TOMB_SKIP_STATS))r.flags|=TOMB_CAMERA_SNAP;
-    if(!tomb_camera_tick_effects(&camera,level,visual,&focus,object,sine_table,&r,&camera_bounce,&objects.enemies->random))play.status="DOS camera query failed";
+    if(!tomb_camera_tick_effects(&camera,level,visual,&focus,object,sine_table,&r,&camera_bounce,coop_mode?&coop_camera_random:&objects.enemies->random))play.status="DOS camera query failed";
     if(objects.enemies)for(int i=0;i<3;i++)objects.enemies->camera[i]=(int32_t)camera.eye[i];
     objects.peru->camera_target_y=(int32_t)camera.target[1];
 }
@@ -559,10 +596,30 @@ static void audio_route(const wchar_t *endpoint){
 #include "preview_xr.h"
 static int autosave_switch_held(size_t index){return play.shooter.mode==TOMB_MODE_VR && (vr.hands[0].lever==(int)index || vr.hands[1].lever==(int)index);}
 static int vr_hand_ring(void){return inventory_open && vr.menu_open && !title_mode && !death_menu && !objects.progress->complete;}
-static int inventory_pauses(void){return inventory_open && (crystal_pending>=0 || !vr_hand_ring());}
+static int inventory_pauses(void){return inventory_open && !coop_connected && (crystal_pending>=0 || !vr_hand_ring());}
 #include "preview_lighting.h"
 #include "preview_interpolation.h"
-static void mesh(const TombMeshView *m) {
+/* PS1 object 83 samples the display buffer as a 16-bit texture page.
+   Snapshot the current view on its first visible crystal, before drawing it. */
+static GLuint crystal_scene;
+static int crystal_scene_ready,crystal_width,crystal_height;
+static void bind_crystal_scene(void){
+    if(!crystal_scene)glGenTextures(1,&crystal_scene);
+    glBindTexture(GL_TEXTURE_2D,crystal_scene);
+    if(crystal_scene_ready)return;
+    GLint viewport[4];glGetIntegerv(GL_VIEWPORT,viewport);
+    if(crystal_width!=viewport[2] || crystal_height!=viewport[3]){
+        crystal_width=viewport[2];crystal_height=viewport[3];
+        glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,crystal_width,crystal_height,0,GL_RGB,GL_UNSIGNED_BYTE,NULL);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_S,0x812f /* GL_CLAMP_TO_EDGE */);
+        glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_WRAP_T,0x812f /* GL_CLAMP_TO_EDGE */);
+    }
+    glCopyTexSubImage2D(GL_TEXTURE_2D,0,0,0,viewport[0],viewport[1],crystal_width,crystal_height);
+    crystal_scene_ready=1;
+}
+static void draw_mesh(const TombMeshView *m,int world_space) {
     int interpolated=0;
     if(render_track<render_count){
         int slot=render_node++,identity=(int)(m-visual->meshes);float matrix[16];
@@ -577,9 +634,9 @@ static void mesh(const TombMeshView *m) {
     int32_t rotation[9],local[3];
     for(int i=0;i<3;i++)for(int j=0;j<3;j++)rotation[i*3+j]=(int32_t)lround(matrix[j*4+i]*16384);
     tomb_light_vector(&model_light,rotation,local);
-    light_UseProgram(shade_program);lighting_options(0);light_ActiveTexture(0x84c1);glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count*2]);light_ActiveTexture(0x84c0);
+    light_UseProgram(shade_program);lighting_options(0);light_Uniform1i(shade_laura,laura_mesh+1);light_ActiveTexture(0x84c1);glBindTexture(GL_TEXTURE_2D,tiles[visual->tile_count*2]);light_ActiveTexture(0x84c0);
     int room_far=m->vertex_stride==8 && settings_draw_distance==0;
-    int room_fog=m->vertex_stride==8 && settings_draw_distance!=2;
+    int mesh_depth=world_space?(int)floor(-matrix[14]):0;
     light_Uniform1i(shade_room_far,room_far);
     int warp=settings_water_style!=0 && m->vertex_stride==8 && (water_eye!=water_room);
     light_Uniform1i(shade_water,water_tint(m->vertex_stride==8?water_room:water_object));light_Uniform1i(shade_warp,warp);
@@ -599,7 +656,9 @@ static void mesh(const TombMeshView *m) {
             }
             unsigned material=u16(face+2*n);
             const unsigned char *texture=NULL;
-            if(group<2) {
+            if(crystal_render){
+                glEnable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);bind_crystal_scene();
+            }else if(group<2) {
                 texture=visual->textures+20*tomb_visual_texture(visual,material&32767,effect_ticks);
                 glEnable(GL_TEXTURE_2D);
                 glBindTexture(GL_TEXTURE_2D,tiles[(lighting_rgba()?0:visual->tile_count)+(u16(texture+2)&32767)]);
@@ -623,11 +682,23 @@ static void mesh(const TombMeshView *m) {
             for(int j=0;j<n;j++) {
                 unsigned index=u16(face+2*j);
                 const unsigned char *p=m->vertices+index*m->vertex_stride;
-                int shade=tomb_light_vertex(m,index,&model_light,local);
+                int shade,depth=mesh_depth;
+                if(world_space && settings_draw_distance==DRAW_SMOOTH_FOG){
+                    double x=s16(p),y=s16(p+2),z=s16(p+4);
+                    depth=camera_distance(matrix[0]*x+matrix[4]*y+matrix[8]*z+matrix[12],
+                                          matrix[1]*x+matrix[5]*y+matrix[9]*z+matrix[13],
+                                          matrix[2]*x+matrix[6]*y+matrix[10]*z+matrix[14]);
+                }else if(m->vertex_stride==8){
+                    depth=(int)floor(-(matrix[2]*s16(p)+matrix[6]*s16(p+2)+matrix[10]*s16(p+4)+matrix[14]));
+                }
                 if(m->vertex_stride==8){
-                    int depth=(int)floor(-(matrix[2]*s16(p)+matrix[6]*s16(p+2)+matrix[10]*s16(p+4)+matrix[14]));
-                    shade=room_fog?tomb_light_room_depth(s16(p+6),depth):s16(p+6);
+                    shade=s16(p+6);
+                    if(settings_draw_distance==0)shade=tomb_light_room_depth(shade,depth);
+                    else if(extended_fog_enabled())shade=max_distance_fog_shade(shade,depth);
                     if(water_room)shade=tomb_water_effect_shade(&water_effect,m->vertex_count-index,effect_ticks,shade);
+                }else{
+                    shade=tomb_light_vertex(m,index,&model_light,local);
+                    if(extended_fog_enabled())shade=max_distance_fog_shade(shade,depth);
                 }
                 float dx=0,dy=0;
                 if(warp){
@@ -649,15 +720,22 @@ static void mesh(const TombMeshView *m) {
                 /* PS1 UVs use quad-strip order even though converted faces
                    use perimeter order. Triangles retain their three UVs. */
                 int uv=visual->level->asset.edition==2 && n==4 && j>=2?5-j:j;
-                if(texture)glTexCoord2f(u16(texture+4+uv*4)/65536.f,u16(texture+6+uv*4)/65536.f);
+                if(crystal_render){
+                    const unsigned char *normal=m->normals && index<m->normal_count?m->normals+index*6:NULL;
+                    double x=normal?s16(normal):0,y=normal?s16(normal+2):0,z=normal?s16(normal+4):0;
+                    double u=128+floor((matrix[0]*x+matrix[4]*y+matrix[8]*z)/128);
+                    double v=128-floor((matrix[1]*x+matrix[5]*y+matrix[9]*z)/128);
+                    glTexCoord2d(u,v);
+                }else if(texture)glTexCoord2f(u16(texture+4+uv*4)/65536.f,u16(texture+6+uv*4)/65536.f);
                 glVertex3f((float)s16(p),(float)s16(p+2),(float)s16(p+4));
             }
             glEnd();
             if(translucent){glDisable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_TRUE);}
         }
     }
-    light_Uniform1i(shade_surface,0);light_Uniform1i(shade_room_far,0);glDisable(GL_CULL_FACE);light_UseProgram(0);if(interpolated)glPopMatrix();
+    light_Uniform1i(shade_surface,0);light_Uniform1i(shade_room_far,0);glDisable(GL_CULL_FACE);light_Uniform1i(shade_laura,0);light_UseProgram(0);if(interpolated)glPopMatrix();
 }
+static void mesh(const TombMeshView *m){draw_mesh(m,1);}
 static void rotate_pose(const TombPose *a,const TombPose *b,int joint,float t) {
     GLfloat rotation[16];
     tomb_preview_rotation(a->rotation[joint],b->rotation[joint],t,rotation);
@@ -705,25 +783,26 @@ static int fps_overlay_active(void) {
         play.lara.actor.current!=50 && play.lara.actor.current!=51 &&
         (render_recording?play.fps.block_view==0:block_view_sample()<=0);
 }
-static int draw_lara_actor(const TombObject *clone) {
-    if(!clone && !pose_mode && play.shooter.mode==TOMB_MODE_VR)return 1;
-    int fps=!clone && fps_overlay_active();
-    if(fps && (render_recording || !tomb_fps_ready(&play)))return 1;
-    int view_weapon=fps && fps_view.weapon?fps_view.weapon:play.weapon_type;
-    int view_sidearm=fps?(view_weapon==4?1:view_weapon):play.sidearm_type;
-    int view_drawn=fps?3:play.pistols.drawn;
+static int draw_lara_actor(const TombObject *clone,const TombPlaytest *player) {
+    if(!clone && !pose_mode && player->shooter.mode==TOMB_MODE_VR)return 1;
+    int mimic_pose=!(clone && objects.enemies->targets && objects.enemies->items[clone-objects.items].flags);
+    int fps=player==&play && !clone && fps_overlay_active();
+    if(fps && (render_recording || !tomb_fps_ready(player)))return 1;
+    int view_weapon=fps && fps_view.weapon?fps_view.weapon:player->weapon_type;
+    int view_sidearm=fps?(view_weapon==4?1:view_weapon):player->sidearm_type;
+    int view_drawn=fps?3:player->pistols.drawn;
     float focus=fps?(float)fps_view_sample(fps_view.previous_focus,fps_view.focus):0;
     float lower=fps?(float)fps_view_sample(fps_view.previous_lower,fps_view.lower):0;
-    int left_frame=play.pistols.left.frame,right_frame=play.pistols.right.frame;
-    if(fps && view_weapon!=play.weapon_type)left_frame=right_frame=view_weapon==4?47:4;
+    int left_frame=player->pistols.left.frame,right_frame=player->pistols.right.frame;
+    if(fps && view_weapon!=player->weapon_type)left_frame=right_frame=view_weapon==4?47:4;
     TombModel model; TombPose a,b; uint16_t selected[15];
     if(!tomb_visual_model(visual,0,&model) || !tomb_visual_lara_meshes(visual,!caves,selected)) return 0;
-    const TombActor *actor=clone?&clone->actor:pose_mode?&start.actor:&play.lara.actor;
+    const TombActor *actor=clone?&clone->actor:pose_mode?&start.actor:&player->lara.actor;
     TombActor view_actor;
     if(fps){
         view_actor=*actor;view_actor.animation=11;view_actor.frame=level->animations[11].first_frame;actor=&view_actor;
         render_track=SIZE_MAX;glClear(GL_DEPTH_BUFFER_BIT);
-    }else if(!pose_mode)render_select(clone?render_object_key(clone):0,actor,0);
+    }else if(!pose_mode)render_select(clone?render_object_key(clone):player==&partner?render_count-1:0,actor,0);
     int selected_animation=pose_mode?animation:actor->animation;
     const TombAnim *anim=level->animations+selected_animation;
     int rate=visual->animations[32*selected_animation+4];
@@ -732,28 +811,28 @@ static int draw_lara_actor(const TombObject *clone) {
     float fraction=(float)(frame-key*rate)/rate;
     if(!tomb_visual_key(visual,(size_t)selected_animation,(size_t)key,&a)) return 0;
     if(!tomb_visual_key(visual,(size_t)selected_animation,(size_t)key+1,&b)) b=a;
-    if(!fps && !pose_mode && play.door_hit_ticks && play.door_hit_direction>=0 && play.door_hit_direction<4) {
+    if(mimic_pose && !fps && !pose_mode && player->door_hit_ticks && player->door_hit_direction>=0 && player->door_hit_direction<4) {
         static const unsigned hits[4]={125,127,126,128};
-        if(!tomb_visual_key(visual,hits[play.door_hit_direction],(size_t)play.door_hit_ticks,&a))return 0;
+        if(!tomb_visual_key(visual,hits[player->door_hit_direction],(size_t)player->door_hit_ticks,&a))return 0;
         b=a;fraction=0;
     }
     if(a.count!=15 || b.count!=15) return 0;
-    TombPose left,right;int armed=!pose_mode && caves && play.pistols.status>=2 && play.pistols.status<=4;
+    TombPose left,right;int armed=mimic_pose && !pose_mode && caves && player->pistols.status>=2 && player->pistols.status<=4;
     if(armed && (!pistol_pose(view_weapon,left_frame,&left) || !pistol_pose(view_weapon,right_frame,&right)))return 0;
     if(caves && !pose_mode) {
         TombModel guns,face;if(!tomb_visual_model(visual,view_sidearm==2?3:view_sidearm==3?4:1,&guns))guns=model;
-        if(!play.inventory.counts[view_sidearm==2?2:view_sidearm==3?3:0])guns=model;
+        if(!player->inventory.counts[view_sidearm==2?2:view_sidearm==3?3:0])guns=model;
         int pistol_drawn=view_weapon==4?0:view_drawn;
         selected[1]=(uint16_t)((pistol_drawn&1?model.mesh_start:guns.mesh_start)+1);
         selected[4]=(uint16_t)((pistol_drawn&2?model.mesh_start:guns.mesh_start)+4);
         if(pistol_drawn&1)selected[13]=(uint16_t)(guns.mesh_start+13);
         if(pistol_drawn&2)selected[10]=(uint16_t)(guns.mesh_start+10);
         TombModel shotgun;
-        if(play.inventory.counts[1] && tomb_visual_model(visual,2,&shotgun)) {
+        if(player->inventory.counts[1] && tomb_visual_model(visual,2,&shotgun)) {
             if(view_weapon==4 && view_drawn){selected[10]=(uint16_t)(shotgun.mesh_start+10);selected[13]=(uint16_t)(shotgun.mesh_start+13);}
             else selected[7]=(uint16_t)(shotgun.mesh_start+7);
         }
-        if(play.pistols.status==4 && ((play.shooter.mode?play.shooter.input:play.last_input)&64) && tomb_visual_model(visual,4,&face))selected[14]=(uint16_t)(face.mesh_start+14);
+        if(player->pistols.status==4 && ((player->shooter.mode?player->shooter.input:player->last_input)&64) && tomb_visual_model(visual,4,&face))selected[14]=(uint16_t)(face.mesh_start+14);
     }
     if(!pose_mode && actor->current==46 && actor->animation!=139){
         TombModel extra;if(!tomb_visual_model(visual,5,&extra) || extra.mesh_count!=15)return 0;
@@ -788,16 +867,18 @@ static int draw_lara_actor(const TombObject *clone) {
         }
     }else {
         glTranslatef((float)actor->x,(float)actor->y,(float)actor->z);
-        glRotatef((clone || pose_mode?actor->yaw:tomb_shooter_render_yaw(&play))*(360.f/65536.f),0,1,0);
+        glRotatef((clone || pose_mode?actor->yaw:tomb_shooter_render_yaw(player))*(360.f/65536.f),0,1,0);
         if(!pose_mode){
             const TombCreature *c=clone?objects.enemies->items+(clone-objects.items):NULL;
-            glRotatef((c?c->pitch:play.lara.pitch)*(360.f/65536.f),1,0,0);glRotatef((c?c->roll:play.movement.lean)*(360.f/65536.f),0,0,1);
+            glRotatef((c?c->pitch:player->lara.pitch)*(360.f/65536.f),1,0,0);glRotatef((c?c->roll:player->movement.lean)*(360.f/65536.f),0,0,1);
         }
     }
     int intensity=level->items[start.item_index].intensity;
-    actor_lighting(actor,&a,intensity,pose_mode?0:play.lara.pitch,pose_mode?0:play.movement.lean);
+    actor_lighting(actor,&a,intensity,pose_mode?0:player->lara.pitch,pose_mode?0:player->movement.lean);
     GLfloat base[16];glGetFloatv(GL_MODELVIEW_MATRIX,base);
     glTranslatef(a.root[0]+fraction*(b.root[0]-a.root[0]),a.root[1]+fraction*(b.root[1]-a.root[1]),a.root[2]+fraction*(b.root[2]-a.root[2]));
+    int laura=coop_mode && player==coop.players[1] && !clone;
+    laura_mesh=laura?0:-1;
     rotate_pose(&a,&b,0,fraction); if(!fps)mesh(visual->meshes+selected[0]);
     for(int i=1;i<15;i++) {
         const unsigned char *bone=visual->trees+4*model.tree_word+(i-1)*16;
@@ -807,7 +888,7 @@ static int draw_lara_actor(const TombObject *clone) {
         glTranslatef((float)s32(bone+4),(float)s32(bone+8),(float)s32(bone+12));
         if(fps && i==11 && view_weapon!=4)glTranslatef(0,focus*650.f,0);
         if(armed && i>=8 && i<=13) {
-            const TombGunArm *arm=i<11?&play.pistols.right:&play.pistols.left;
+            const TombGunArm *arm=i<11?&player->pistols.right:&player->pistols.left;
             const TombPose *pose=i<11?&right:&left;
             if(view_weapon!=4 && (i==8 || i==11)) {
                 GLfloat matrix[16];glGetFloatv(GL_MODELVIEW_MATRIX,matrix);
@@ -816,21 +897,26 @@ static int draw_lara_actor(const TombObject *clone) {
             }
             rotate_pose(pose,pose,i,0);
         } else rotate_pose(&a,&b,i,fraction);
-        if(!fps && !pose_mode && (i==7 || i==14)) {
-            glRotatef((i==7?play.lara.torso_yaw:play.lara.head_yaw)*(360.f/65536.f),0,1,0);
-            glRotatef((i==7?play.lara.torso_pitch:play.lara.head_pitch)*(360.f/65536.f),1,0,0);
+        if(mimic_pose && !fps && !pose_mode && (i==7 || i==14)) {
+            glRotatef((i==7?player->lara.torso_yaw:player->lara.head_yaw)*(360.f/65536.f),0,1,0);
+            glRotatef((i==7?player->lara.torso_pitch:player->lara.head_pitch)*(360.f/65536.f),1,0,0);
         }
         if(fps && front_test && i==10)glGetFloatv(GL_MODELVIEW_MATRIX,fps_hand_view);
-        render_parent=parent;
+        render_parent=parent;laura_mesh=laura?i:-1;
         if(!fps ||
            (i>=9 && i<=10) || ((focus<1 || view_weapon==4) && i>=12 && i<=13))
             mesh(visual->meshes+selected[i]);
-        parent=i;
-        if(armed && (!fps || (view_weapon==play.weapon_type && lower==0)) && view_weapon!=4 && ((i==10 && play.pistols.right.flash) || (i==13 && play.pistols.left.flash && (!fps || play.shooter.dual))))gun_flash();
+        laura_mesh=-1;parent=i;
+        if(armed && (!fps || (view_weapon==player->weapon_type && lower==0)) && view_weapon!=4 && ((i==10 && player->pistols.right.flash) || (i==13 && player->pistols.left.flash && (!fps || player->shooter.dual))))gun_flash();
     }
-    glPopMatrix();render_track=SIZE_MAX; return 1;
+    laura_mesh=-1;glPopMatrix();render_track=SIZE_MAX; return 1;
 }
-static int lara(void){return draw_lara_actor(NULL);}
+static int lara(void){
+    int ok=draw_lara_actor(NULL,&play);
+    if(ok && coop_connected && (render_recording || render_visible(render_count-1,partner.lara.actor.room)))
+        ok=draw_lara_actor(NULL,&partner);
+    return ok;
+}
 /* Eight-segment bolts and two branches. Drawing randomness is independent of
    gameplay; the controller fixes the target and branch seed for each pulse. */
 static void draw_lightning(const TombObject *o){
@@ -870,8 +956,9 @@ static void draw_billboard(int sprite,const float position[16],int intensity,int
         double m[16];vr_upright_sprite_matrix(position,m);glMultMatrixd(m);
     }else{glLoadIdentity();glTranslatef((float)v[0],(float)v[1],(float)v[2]);}
     glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glBindTexture(GL_TEXTURE_2D,tiles[(lighting_rgba()?0:visual->tile_count)+u16(p)]);lighting_filter();glColor3f(1,1,1);
-    int depth=settings_draw_distance==2?0:(int)-v[2];
-    int shade=settings_draw_distance==1?fmin(8191,fmax(0,intensity+fmax(0,depth-12288))):tomb_sprite_shade((int16_t)intensity,depth);
+    int depth=settings_draw_distance==DRAW_NO_FOG?0:(int)-v[2];
+    if(settings_draw_distance==DRAW_SMOOTH_FOG)depth=camera_distance(v[0],v[1],v[2]);
+    int shade=extended_fog_enabled()?fmin(8191,fmax(0,max_distance_fog_shade(intensity,depth))):tomb_sprite_shade((int16_t)intensity,depth);
     if(shade<0){glPopMatrix();return;}
     /* Keep the image on the original billboard, but fold its depth proxy onto
        a supporting plane. The proxy is evaluated along each viewing ray, so
@@ -898,7 +985,10 @@ static void draw_billboard(int sprite,const float position[16],int intensity,int
 }
 static int draw_object(const TombObject *o) {
     water_object=(level->rooms[o->actor.room].flags&1)!=0;
-    if(o->object==6)return draw_lara_actor(o);
+    if(o->object==6){
+        const TombPlaytest *owner=coop_connected?coop.players[(size_t)(o-objects.items)>=objects.source_count]:&play;
+        return draw_lara_actor(o,owner);
+    }
     if(o->object==168){
         const TombActor *a=&o->actor;if(a->animation<0 || (size_t)a->animation>=visual->mesh_count)return 0;
         render_select(render_object_key(o),a,0);glPushMatrix();glTranslatef((float)a->x,(float)a->y,(float)a->z);
@@ -1033,6 +1123,15 @@ static void draw_hazard_effect(const TombHazardEffect *e,size_t track,int intens
     draw_billboard(sprite,position,intensity,tomb_pickup_object(e->id)?e->room:-1);
 }
 
+static void draw_world_pickup(size_t i,const TombPlaytest *viewer){
+    TombObject *pickup=objects.items+i,ammo;
+    if(objects.pickup_claims && pickup->object>=85 && pickup->object<=87 && viewer->inventory.counts[pickup->object-84]){
+        ammo=*pickup;ammo.object+=4;pickup=&ammo;
+    }
+    if((viewer->gameplay_options&TOMB_3D_PICKUPS) && draw_pickup_model(pickup,i<level->item_count?level->items[i].yaw:0))return;
+    TombHazardEffect e={0};e.id=pickup->object;e.x=pickup->actor.x;e.y=pickup->actor.y;e.z=pickup->actor.z;e.room=pickup->actor.room;
+    draw_hazard_effect(&e,SIZE_MAX,i<level->item_count?level->items[i].intensity:4096);
+}
 #include "preview_water.h"
 #include "preview_shadow.h"
 #ifdef TOMB_BUILD_TESTS
@@ -1086,7 +1185,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     if(next)next->music_edition=music_source()==0?2:1;
     TombObjects world={0};TombPlaytest player;TombLaraStart spawn;TombScreenRect *rects=NULL;
     if(!next || !(view=tomb_visual_load(next,error,sizeof error)) || !tomb_lara_start(next,&spawn) ||
-       !(rects=calloc(next->room_count,sizeof *rects)) || !tomb_objects_init(&world,next,view) ||
+       !(rects=calloc(next->room_count,sizeof *rects)) || !tomb_objects_init_session(&world,next,view,menu_session) ||
        !tomb_playtest_init(&player,next,sine_table,view)) {
         tomb_objects_free(&world);free(rects);tomb_visual_free(view);tomb_level_free(next);
         if(custom_campaign_id){custom_log_error(custom_campaign_id,*error?error:"Failed to initialise level objects, spawn or player");MessageBoxA(NULL,"Could not play this level. See its Custom folder for import.log.","Custom Levels",MB_ICONERROR);return 0;}
@@ -1147,7 +1246,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     sound_failed=0;if(tomb_sound_bank_load(&sound_bank,level)){tomb_sound_init(&sound_mixer,&sound_bank);sound_output=tomb_sound_output_open(&sound_mixer);
             tomb_sound_init(&ring_sound_mixer,&sound_bank);ring_sound_output=tomb_sound_output_open(&ring_sound_mixer);}
     if(!sound_output || !ring_sound_output)sound_failed=1;if(!saved)update_camera(1.0/30);
-    if(!saved && !front_test && !transition_test){
+    if(!saved && !front_test && !transition_test && !menu_session){
         const char *movie=next_number==0?"MANSION":next_number==1?"SNOW":next_number==5?"LIFT":next_number==10?"VISION":next_number==13?"CANYON":next_number==14?"PYRAMID":NULL;
         if(movie)play_movie(movie,0);
     }autosave_reset(!saved);if(custom_campaign_id)custom_log_error(custom_campaign_id,"Entered gameplay");return 1;
@@ -1185,6 +1284,72 @@ static void inventory_begin(void) {
     if(death_menu){options_ring=1;inventory_keys=inventory_key_only=0;tomb_ring_init_options(&inventory_ring,2);}
     else if(!(inventory_keys?tomb_ring_init_keys(&inventory_ring,&play.inventory):tomb_ring_init(&inventory_ring,&play.inventory)))return;
     ring_previous=inventory_ring;compass_previous=compass_angle;inventory_sound();inventory_open=1;inventory_stats=inventory_selected=0;inventory_input=0;inventory_accumulator=0;if(!vr_hand_ring())accumulator=0;
+}
+/* Setup runs on the menu loop, so the passport keeps drawing and Cancel
+   remains available while the other PC is choosing its preferences. */
+static int verify_coop_build(void){
+    if(!build_signature){
+        char path[MAX_PATH];if(!GetModuleFileNameA(NULL,path,sizeof path))return 0;
+        FILE *f=fopen(path,"rb");if(!f)return 0;
+        unsigned char bytes[16384];size_t n;uint32_t hash=2166136261u;
+        while((n=fread(bytes,1,sizeof bytes,f)))hash=caves_hash(hash,bytes,n);
+        int failed=ferror(f);fclose(f);if(failed)return 0;
+        build_signature=caves_hash(hash,sine_table,sizeof sine_table);
+    }
+    return 1;
+}
+static void menu_coop_wait(void){
+    if(!verify_coop_build()){strcpy(menu_error,"Could not verify this build");return;}
+    if(!coop_lan_open(menu_role==2?host_address:NULL)){
+        snprintf(menu_error,sizeof menu_error,"%s",coop_lan_error());coop_lan_close();return;
+    }
+    menu_error[0]=0;menu_session=1;setup_stage=0;new_game_menu=COOP_WAIT_PAGE;
+    session_offer[0]=menu_role==1?(unsigned)new_game_level|((unsigned)(new_game_custom_id?0:campaign_selected)<<8):0;
+    session_offer[1]=new_game_options;session_offer[2]=menu_role==1?(unsigned)new_game_custom_id:0;
+}
+static void menu_coop_leave(HWND window,const char *reason){
+    int in_setup=title_mode;
+    coop_lan_close();menu_session=coop_mode=coop_connected=coop_pack_request=0;
+    draw_requested=0;memset(held_keys,0,sizeof held_keys);
+    if(in_setup){
+        new_game_menu=menu_role==2?COOP_ADDRESS_PAGE:new_game_custom_id?2:5;
+        snprintf(menu_error,sizeof menu_error,"%s",reason?reason:"");
+    }else{
+        objects.progress->complete=0;menu_role=0;frontend_title();
+        if(reason)MessageBoxA(window,reason,"Multiplayer",MB_OK);
+    }
+    SetWindowTextA(window,"Tomb Raider Beyond");
+}
+static int menu_coop_poll(HWND window){
+    int r=coop_lan_setup(build_signature,(unsigned)setup_stage,session_offer[setup_stage],peer_offer+setup_stage);
+    if(r<0){menu_coop_leave(window,coop_lan_error());return 0;}
+    if(!r || ++setup_stage<3)return 0;
+    int me=menu_role-1;
+    uint32_t *host=me?peer_offer:session_offer,*client=me?session_offer:peer_offer;
+    unsigned number=host[0]&255,campaign=host[0]>>8;
+    if(!number || number>=LEVEL_CHOICE_COUNT || campaign>CAMPAIGN_COMBINED || host[2]>INT_MAX ||
+       (host[2] && (number!=1 || campaign!=CAMPAIGN_TR)) || (client[1]&~(uint32_t)COOP_VISUAL_OPTIONS)){
+        menu_coop_leave(window,"Invalid multiplayer level or preferences");return 0;
+    }
+    campaign_selected=(int)campaign;custom_campaign_id=(int)host[2];
+    if(!load_game_level((int)number,0,NULL)){
+        custom_campaign_id=0;menu_coop_leave(window,"Could not load the host's level");return 0;
+    }
+    if(!tomb_playtest_init(&partner,level,sine_table,visual)){menu_coop_leave(window,"Could not initialise the second player");return 0;}
+    partner.movement_only=1;partner.objects=&objects;
+    coop.players[me]=&play;coop.players[1-me]=&partner;
+    for(int i=0;i<2;i++){
+        uint32_t options=i?(host[1]&~(uint32_t)COOP_VISUAL_OPTIONS)|(client[1]&COOP_VISUAL_OPTIONS):host[1];
+        tomb_gameplay_start(coop.players[i],options);
+        coop.cameras[i]=objects.camera;coop.last_targets[i]=objects.last_target;
+    }
+    if(!caves_coop_enable_pickups(&coop) || !tomb_enemies_coop_init(&objects,coop.players[0],coop.players[1])){
+        menu_coop_leave(window,"Could not initialise shared pickups and enemies");return 0;
+    }
+    coop_signature=caves_hash(build_signature,level->file_data,level->file_size);
+    coop_mode=menu_role;coop_pack_request=draw_requested=0;coop_camera_random=1;
+    memset(held_keys,0,sizeof held_keys);
+    return 1;
 }
 static int crystal_poll(void){
     int action=(play.shooter.mode==TOMB_MODE_FPS?play.shooter.input:play.last_input)&64;
@@ -1224,7 +1389,10 @@ static void text_aligned(float x,float y,const char *text,unsigned flags) {
 static void inventory_tick(unsigned input) {
     ring_previous=inventory_ring;compass_previous=compass_angle;
     if(inventory_ring.motion.status==2 && inventory_ring.motion.target==13){if(backdrop_shade>32)--backdrop_shade;}else if(backdrop_shade<48)++backdrop_shade;
-    if(frontend_input(&input))return;
+    if(coop_connected && objects.pickup_claims){
+        int item=inventory_ring.items[inventory_ring.current].object;
+        if(item!=108 && item!=109)input&=~TOMB_RING_SELECT;
+    }else if(frontend_input(&input))return;
     if(!title_mode && !death_menu && !options_ring && !inventory_key_only && ((input&16 && !inventory_keys) || (input&32 && inventory_keys))){
         int owned=play.inventory.scion+play.inventory.counts[8];for(int q=0;q<8;q++)owned+=play.inventory.quest[q];
         if((inventory_keys || owned) && tomb_ring_change_begin(&inventory_ring,!inventory_keys))inventory_ring_current[inventory_keys]=inventory_ring.current;
@@ -1248,6 +1416,10 @@ static void inventory_tick(unsigned input) {
     if(inventory_ring.motion.status!=13)return;
     if(play.shooter.mode==TOMB_MODE_VR){vr.menu_primary=1;vr.menu_open=0;xr.panel_open=0;inventory_input=0;}
     int id=inventory_ring.chosen;inventory_open=inventory_stats=0;accumulator=0;
+    if(coop_connected && objects.pickup_claims){
+        if(id==108 || id==109)coop_pack_request=id==108?COOP_SMALL_PACK:COOP_LARGE_PACK;
+        return;
+    }
     if(id==71 || id==73){frontend_execute(id);return;}
     if(title_mode || death_menu){inventory_begin();return;}
     if(play.shooter.mode==TOMB_MODE_VR && tomb_quest_slot(id)>=0){vr.selected_key=id;play.inventory.chosen=-1;return;}
@@ -1262,7 +1434,7 @@ static void ring_item(const TombRingItem *item,const TombRingItem *previous) {
     glTranslatef(0,(float)item->yoff,(float)item->zoff);glRotatef(item->y*360.f/65536,0,1,0);glRotatef(item->x*360.f/65536,1,0,0);
     TombPose before=pose;if(ring_alpha<1)tomb_visual_key(visual,model.animation,(size_t)previous->frame,&before);
     glTranslatef((float)(before.root[0]+(pose.root[0]-before.root[0])*ring_alpha),(float)(before.root[1]+(pose.root[1]-before.root[1])*ring_alpha),(float)(before.root[2]+(pose.root[2]-before.root[2])*ring_alpha));rotate_pose(&before,&pose,0,(float)ring_alpha);
-    if(item->meshes&1)mesh(visual->meshes+model.mesh_start);
+    if(item->meshes&1)draw_mesh(visual->meshes+model.mesh_start,0);
     GLfloat stack[64][16];int depth=0;
     for(unsigned j=1;j<model.mesh_count;j++) {
         const unsigned char *bone=visual->trees+4*model.tree_word+(j-1)*16;int flags=s32(bone);
@@ -1270,7 +1442,7 @@ static void ring_item(const TombRingItem *item,const TombRingItem *previous) {
         if(flags&2){if(depth>=64)return;glGetFloatv(GL_MODELVIEW_MATRIX,stack[depth++]);}
         glTranslatef((float)s32(bone+4),(float)s32(bone+8),(float)s32(bone+12));rotate_pose(&before,&pose,(int)j,(float)ring_alpha);
         if(tomb_ring_compass_bone(item->object,model.mesh_count,j))glRotatef((float)(compass_previous+tomb_word(compass_angle-compass_previous)*ring_alpha)*360.f/65536,0,1,0);
-        if(item->meshes&(1u<<j))mesh(visual->meshes+model.mesh_start+j);
+        if(item->meshes&(1u<<j))draw_mesh(visual->meshes+model.mesh_start+j,0);
     }
 }
 static void draw_inventory_ring(void) {
@@ -1388,17 +1560,22 @@ static void overlay(void) {
     if(overlay_pass!=1 && inventory_open)frontend_overlay();
     if(overlay_pass!=1 && !title_mode && !complete && (!inventory_open || medipack)) {
         glDisable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);
-        tomb_hud_bar(tomb_hud_health(&play.hud,play.lara.health,play.pistols.status,medipack),0,(int)(width/ui_scale()),bar_line,NULL);
+        TombPlaytest *subject=coop_connected && objects.pickup_claims && play.lara.health<=0 && partner.lara.health>0?&partner:&play;
+        tomb_hud_bar(tomb_hud_health(&subject->hud,subject->lara.health,subject->pistols.status,medipack),0,(int)(width/ui_scale()),bar_line,NULL);
         if(!inventory_open) {
-            tomb_hud_bar(tomb_hud_air(play.lara.air,play.lara.water_status),1,(int)(width/ui_scale()),bar_line,NULL);
+            tomb_hud_bar(tomb_hud_air(subject->lara.air,subject->lara.water_status),1,(int)(width/ui_scale()),bar_line,NULL);
             /* Shotgun ammunition is stored per pellet; the HUD shows shells. */
-            if((play.weapon_type>=2 && play.weapon_type<=4) && play.pistols.status==4){char amount[64];int slot=play.weapon_type==4?1:play.weapon_type;tomb_ui_ammo(play.inventory.ammo[slot],slot,amount);hud_ammo_text(amount);}
-            for(int i=0;i<3;i++)if(play.hud.pickup_time[i]>0)pickup_icon(play.hud.pickup_id[i],i);
+            if((subject->weapon_type>=2 && subject->weapon_type<=4) && subject->pistols.status==4){char amount[64];int slot=subject->weapon_type==4?1:subject->weapon_type;tomb_ui_ammo(subject->inventory.ammo[slot],slot,amount);hud_ammo_text(amount);}
+            for(int i=0;i<3;i++)if(subject->hud.pickup_time[i]>0)pickup_icon(subject->hud.pickup_id[i],i);
         }
     }
     if(overlay_pass!=1 && !title_mode && !cinema_mode && !complete && !inventory_open &&
        level_name_time>0 && detail_notice_time<=0 && (play.gameplay_options&TOMB_SHOW_LEVEL_NAME))
         ui_text(0,-24,game_level_name(level_number),TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
+    if(overlay_pass!=1 && coop_mode && !coop_connected){
+        ui_text(0,-12,coop_mode==1?"Waiting for Client...":"Connecting to Host...",TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
+        ui_text(0,16,"Esc - Cancel",TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
+    }
     if(overlay_pass!=1 && !title_mode && !cinema_mode && detail_notice_time>0){
         double scale=ui_scale();
         TombTextStyle style={0,0,65536,65536,1,6,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM};
@@ -1420,6 +1597,7 @@ static void overlay(void) {
 static int draw_frame_composite(int);
 #include "preview_vr.h"
 static int draw(void) {
+    crystal_scene_ready=0;
     render_track=SIZE_MAX;
     /* Every world frame owns its depth state, including after 2D presentation. */
     glEnable(GL_DEPTH_TEST);glDepthMask(GL_TRUE);glDisable(GL_SCISSOR_TEST);glDisable(GL_POLYGON_OFFSET_FILL);
@@ -1499,11 +1677,14 @@ static int draw(void) {
     }
     glDisable(GL_SCISSOR_TEST);
     if(!cinema_mode)draw_shadows();
+    const TombPlaytest *viewer=coop_connected && play.lara.health<=0 && partner.lara.health>0?&partner:&play;
     if(caves)for(size_t i=0;i<objects.count;i++) {
         const TombObject *o=objects.items+i;
         if((o->object==83 && !(play.gameplay_options&TOMB_SAVE_CRYSTALS)) || o->object<0 || (!cinema_mode && !tomb_object_supported(o->object)) || (o->actor.flags&6)==6 || (tomb_pickup_object(o->object) && (o->actor.flags&4)))continue;
         if(render_object_visible(i)) {
-            if(tomb_pickup_object(o->object)){if((play.gameplay_options&TOMB_3D_PICKUPS) && draw_pickup_model(o,i<level->item_count?level->items[i].yaw:0))continue;TombHazardEffect e={0};e.id=o->object;e.x=o->actor.x;e.y=o->actor.y;e.z=o->actor.z;e.room=o->actor.room;draw_hazard_effect(&e,SIZE_MAX,i<level->item_count?level->items[i].intensity:4096);}
+            if(tomb_pickup_object(o->object)){
+                if(!objects.pickup_claims || !(objects.pickup_claims[i]&viewer->pickup_bit))draw_world_pickup(i,viewer);
+            }
             else if(!draw_object(o)){fprintf(stderr,"object draw failed: %d animation %d frame %d\n",o->object,o->actor.animation,o->actor.frame);return 0;}
         }
     }
@@ -1520,6 +1701,15 @@ static int draw(void) {
        opaque walls still occlude water; world-space Lara stays before it. */
     int defer_fps=(visual->rgba_tiles || water_ps1_colour()) && fps_overlay_active();
     int lara_ok=cinema_mode || defer_fps?1:lara();if(!cinema_mode)vr_hands_draw();
+    if(objects.pickup_claims && !cinema_mode){
+        glPushAttrib(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
+        glEnable(GL_BLEND);light_BlendColor(0,0,0,.4f);
+        glBlendFunc(0x8003,0x8004); /* GL_CONSTANT_ALPHA, GL_ONE_MINUS_CONSTANT_ALPHA */
+        glDepthMask(GL_FALSE);
+        for(size_t i=0;i<objects.count;i++)
+            if(objects.pickup_claims[i]==viewer->pickup_bit && render_object_visible(i))draw_world_pickup(i,viewer);
+        glPopAttrib();
+    }
     if(visual->rgba_tiles || water_ps1_colour()){
         room_translucent_pass=1;glPushMatrix();glLoadMatrixd(view);
         for(size_t i=0;i<level->room_count;i++){
@@ -1769,6 +1959,33 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
     if(msg==WM_CLOSE) { running=0; return 0; }
     if(msg==WM_SIZE) { display_size(w); return 0; }
     if(media_busy && (msg==WM_KEYDOWN || msg==WM_KEYUP || msg==WM_SYSKEYDOWN || msg==WM_SYSKEYUP)){if(msg==WM_KEYDOWN && wp==VK_ESCAPE && !(lp&(1L<<30)))media_skip=1;return 0;}
+    if(title_mode && new_game_menu==COOP_ADDRESS_PAGE && msg==WM_CHAR){
+        size_t n=strlen(host_address);
+        if(wp==8){if(address_selected)host_address[0]=0;else if(n)host_address[n-1]=0;address_selected=0;}
+        else if((wp>='0' && wp<='9') || wp=='.'){
+            if(address_selected){n=0;address_selected=0;}
+            if(n+1<sizeof host_address){host_address[n]=(char)wp;host_address[n+1]=0;}
+        }
+        return 0;
+    }
+    if(coop_mode && msg==WM_KEYDOWN){
+        if(menu_session && wp==VK_F10){menu_coop_leave(w,NULL);return 0;}
+        if(objects.pickup_claims && coop_connected && play.lara.health>0){
+            if(inventory_open){
+                if(lp&(1L<<30))return 0;
+                if(wp==VK_ESCAPE || wp==bindings[12])inventory_input|=TOMB_RING_BACK;
+                else if(wp==VK_LEFT || wp==VK_NUMPAD4)inventory_input|=TOMB_RING_LEFT;
+                else if(wp==VK_RIGHT || wp==VK_NUMPAD6)inventory_input|=TOMB_RING_RIGHT;
+                else if(wp==VK_RETURN || wp==bindings[8])inventory_input|=TOMB_RING_SELECT;
+                return 0;
+            }
+            if(wp==bindings[12] && !(lp&(1L<<30))){inventory_begin();return 0;}
+            if((wp=='8' || wp=='9') && !(lp&(1L<<30))){coop_pack_request=wp=='8'?COOP_SMALL_PACK:COOP_LARGE_PACK;return 0;}
+        }
+        if(wp==VK_ESCAPE)running=0;
+        if(wp==bindings[9] && !(lp&(1L<<30)))draw_requested=1;
+        return 0;
+    }
     if(msg==WM_KEYDOWN) {
         if(binding_wait && !(lp&(1L<<30))){
             if(pad_wait){if(wp==VK_ESCAPE)binding_wait=pad_wait=0;return 0;}
@@ -1856,6 +2073,7 @@ int main(int argc,char **argv) {
 #endif
     int shotgun_test=0,city_test=0,combat_test=0,pickup_test=0,finish_test=0,select_level=0;
     char path[MAX_PATH],error[256]; const char *shot=NULL,*trace=NULL; double shot_time=0; int interest_test=0,quest_ui_test=0, simulate=0, ledge_test=0, fast_fall_test=0, jump_test=0, standing_test=0, grab_test=0, climb_test=0, window_input_test=0, pool_test=0, forward_test=0, vault_test=0,gym_test=0,render_test=0,slide_test=0,switch_test=0,hazard_test=0; uint32_t scripted_input=0;
+    const char *coop_address=NULL;int wolf_encounter=0;
     title_mode=argc==1;if(title_mode)caves=1;
     source_root_init();source_scan();asset_path(path,"GYM.PHD");
     for(int i=1;i<argc;i++) {
@@ -1886,6 +2104,10 @@ int main(int argc,char **argv) {
             if(!end || *end || n<0 || n>=LEVEL_CHOICE_COUNT)return 1;
             level_number=(int)n;caves=n!=0;
         }
+        else if(!strcmp(argv[i],"--revival"))wolf_encounter=2;
+        else if(!strcmp(argv[i],"--wolves"))wolf_encounter=1;
+        else if(!strcmp(argv[i],"--coop-host"))coop_mode=1;
+        else if(!strcmp(argv[i],"--coop-join") && i+1<argc){coop_mode=2;coop_address=argv[++i];}
         else if(!strcmp(argv[i],"--caves")){caves=1;level_number=1;}
         else if(!strcmp(argv[i],"--xr-probe") || !strcmp(argv[i],"--vr-render-test") || !strcmp(argv[i],"--vr-movie-test")){caves=1;level_number=1;}
         else if(!strcmp(argv[i],"--interest-test"))interest_test=1;
@@ -1932,6 +2154,11 @@ int main(int argc,char **argv) {
         else if(!strcmp(argv[i],"--follow-camera")) manual_camera=0;
         else if(!strcmp(argv[i],"--animation") && i+1<argc) animation=atoi(argv[++i]);
         else { MessageBoxA(NULL,"Usage: tomb_preview [--caves] [--capture image.ppm] [--time seconds] [--animation 0|1|11]","Preview",MB_ICONERROR); return 1; }
+    }
+    if(wolf_encounter && !coop_mode)return 1;
+    if(coop_mode){
+        if(argc!=(coop_mode==1?2:3)+(wolf_encounter!=0))return 1;
+        caves=1;level_number=1;title_mode=0;
     }
     if(select_level){level_number=level_picker(0);if(level_number<0)return 0;caves=level_number!=0;home_from_level_select=level_number==0;}
     if((animation!=0 && animation!=1 && animation!=11) || !isfinite(shot_time) || shot_time<0 || !isfinite(orbit) || !isfinite(distance) || distance<600 || distance>5000) return 1;
@@ -2351,7 +2578,7 @@ int main(int argc,char **argv) {
 #ifdef TOMB_BUILD_TESTS
     if(strstr(GetCommandLineA(),"--gamepad-test"))return gamepad_check()?0:2;
 #endif
-    if(!shot && !front_test){settings_read();settings_write();}
+    if(!shot && !front_test){settings_read();if(!coop_mode)settings_write();}
     if(!shot && !front_test)pad_init();
     display_size(window);
 #ifdef TOMB_BUILD_TESTS
@@ -2401,6 +2628,8 @@ int main(int argc,char **argv) {
         toggle_fullscreen(window);
         ShowWindow(window,SW_SHOW);
     }
+    /* An idle, unfocused window still needs a regularly dispatched message. */
+    SetTimer(window,1,500,NULL);
     if(cutscene_only)return play_cutscene(0)?0:2;
     if(movie_only)return play_movie(movie_only,0)?0:2;
     if(title_mode && !shot && !front_test){play_movie("CORE",0);if(running)play_movie("ESCAPE",0);if(running)play_movie("CAFE",0);}
@@ -2412,11 +2641,27 @@ int main(int argc,char **argv) {
         char log_path[128];snprintf(log_path,sizeof log_path,"build/jaw-live-%lu.csv",(unsigned long)GetTickCount());jaw_log=fopen(log_path,"w");if(!jaw_log)return 2;
         fputs("input,hp_before,hp_after,x_before,y_before,z_before,yaw_before,anim_before,frame_before,flags_before,x_after,y_after,z_after,yaw_after,state_after,anim_after,frame_after,fall_speed_after,flags_after,gate2_frame,gate3_frame,gate2_touch,gate3_touch,floor_state\n",jaw_log);
     }
+    if(coop_mode){
+        if(!tomb_playtest_init(&partner,level,sine_table,visual))return 1;
+        partner.objects=&objects;partner.movement_only=1;
+        caves_coop_init(&coop,coop_mode==1?&play:&partner,coop_mode==2?&play:&partner);
+        if(wolf_encounter){
+            if(!caves_coop_wolf_start(&coop,sine_table) || (wolf_encounter==2 && !caves_coop_pickup_start(&coop))){MessageBoxA(window,"Could not start the Caves wolf encounter.","Caves LAN",MB_OK);return 1;}
+            camera.ready=0;render_reset();update_camera(1.0/30);
+        }
+        if(!verify_coop_build())return 1;
+        coop_signature=caves_hash(build_signature+(unsigned)wolf_encounter,level->file_data,level->file_size);
+        if(!coop_lan_open(coop_address)){
+            MessageBoxA(window,coop_lan_error(),"Caves LAN",MB_OK);coop_lan_close();return 1;
+        }
+        SetWindowTextA(window,coop_mode==1?"Caves - Waiting for Client... (Esc to cancel)":"Caves - Connecting to host... (Esc to cancel)");
+    }
     LARGE_INTEGER frequency,last,now; QueryPerformanceFrequency(&frequency); QueryPerformanceCounter(&last);
     int ok=1,was_suspended=1;ring_previous=inventory_ring;ring_interpolate=1;
     while(running) {
         display_size(window);
-        autosave_poll();
+        if(menu_session && !coop_mode)menu_coop_poll(window);
+        if(!menu_session && !coop_mode)autosave_poll();
         MSG msg;
         while(PeekMessage(&msg,NULL,0,0,PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
         QueryPerformanceCounter(&now); double dt=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart; last=now;
@@ -2452,7 +2697,32 @@ int main(int argc,char **argv) {
         if(focused && detail_notice_time>0)detail_notice_time=fmax(0,detail_notice_time-dt);
         mouse_update(window,suspended);
         was_suspended=suspended;
-        if(!shot && !pose_mode && !paused && !inventory_pauses() && !objects.progress->complete && focused) {
+        if(coop_mode){
+            accumulator=fmin(accumulator+dt,0.1);
+            if(accumulator>=1.0/30){
+                uint32_t inputs[2];int me=coop_mode-1;
+                int result=coop_lan_frame(coop_signature,caves_coop_digest(&coop),
+                    coop_pack_request|(focused && !inventory_open && play.lara.health>0?(game_input()|(draw_requested?32u:0u)):0),&inputs[me],&inputs[1-me]);
+                if(result<0){if(menu_session){menu_coop_leave(window,coop_lan_error());continue;}MessageBoxA(window,coop_lan_error(),"Caves LAN",MB_OK);break;}
+                if(result>0){
+                    if(!coop_connected){
+                        coop_connected=1;render_reset();
+                        char caption[180];snprintf(caption,sizeof caption,"%s - %s",custom_campaign_id?"Custom Level":game_level_name(level_number),me?"Laura Cruz (Client)":"Lara Croft (Host)");
+                        SetWindowTextA(window,caption);
+                    }
+                    if(!caves_coop_tick(&coop,inputs,me)){ok=0;break;}
+                    coop_pack_request&=~inputs[me];
+                    if(play.lara.health<=0 && inventory_open){inventory_open=inventory_stats=0;backdrop_dirty=1;}
+                    draw_requested=0;water_particles_tick();if(sound_output)sound_tick();
+                    update_camera(1.0/30);if(!render_capture()){ok=0;break;}
+                    accumulator-=1.0/30;
+                    if(objects.progress->complete){
+                        if(menu_session){menu_coop_leave(window,"Level complete.");continue;}
+                        MessageBoxA(window,"Caves complete.","Caves LAN",MB_OK);break;
+                    }
+                }else accumulator=1.0/30;
+            }
+        }else if(!shot && !pose_mode && !paused && !inventory_pauses() && !objects.progress->complete && focused) {
             uint32_t input=game_input();
             accumulator+=dt;
             while(accumulator>=1.0/30.0) { if(play.lara.health<=0 && tomb_death_menu_due(play.dead_ticks,input)){death_menu=1;inventory_begin();break;} if(play.shooter.mode==TOMB_MODE_VR?tomb_vr_tick(&vr,&play):jaw_diagnostic_tick(&play,input|(draw_requested?32:0))){water_particles_tick();if(sound_output)sound_tick();}draw_requested=0;if(frontend_home_complete())break;if(objects.progress->complete)backdrop_dirty=1; update_camera(1.0/30); if(!render_capture()){ok=0;running=0;break;} autosave_poll(); accumulator-=1.0/30.0; if(crystal_poll())break; if(play.quest_request){death_menu=play.lara.health<=0;inventory_begin();break;} }
@@ -2473,7 +2743,7 @@ int main(int argc,char **argv) {
             if(sound_output && !tomb_sound_output_update(sound_output,suspended))sound_failed=1;
             if(ring_sound_output && !tomb_sound_output_update(ring_sound_output,!focused))sound_failed=1;
         }
-        if(!shot && (level_number==4 || level_number==9 || level_number==14) && objects.progress->complete && !cutscene_seen){
+        if(!shot && !title_mode && !coop_mode && (level_number==4 || level_number==9 || level_number==14) && objects.progress->complete && !cutscene_seen){
             cutscene_seen=1;if(level_number==14)play_movie("PRISON",0);if(!play_cutscene_sequence(0,level_number==4?1:level_number==9?2:level_number==13?3:4))MessageBoxA(window,"Could not play cinematic. Check converted CUT1-CUT4 levels and audio assets.","Tomb Raider Beyond",MB_OK|MB_ICONWARNING);
             backdrop_dirty=1;QueryPerformanceCounter(&last);
         }
@@ -2484,6 +2754,10 @@ int main(int argc,char **argv) {
             if(!load_next_level()){ok=0;break;}
             QueryPerformanceCounter(&last);continue;
         }
+        if(!shot && !xr.instance && !focused && (title_mode || IsIconic(window))){
+            MsgWaitForMultipleObjectsEx(0,NULL,16,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+            continue;
+        }
         if(shot) elapsed=shot_time;
         if(!draw_frame_composite(1)) { ok=0; break; }
         for(int h=0;h<2;h++)if(vr.fired[h]){xr_feedback(h,.65f);vr.fired[h]=0;}
@@ -2492,12 +2766,17 @@ int main(int argc,char **argv) {
         display_present(dc);
         /* Active rendering is paced by VSync, the chosen cap or the XR runtime.
            Sleep(1) can last a full scheduler tick and impose an unintended cap. */
-        if(!focused && !xr.instance)Sleep(16);
+        if(!focused && !xr.instance){
+            MsgWaitForMultipleObjectsEx(0,NULL,16,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+        }
     }
     if(jaw_log){fclose(jaw_log);jaw_log=NULL;}
+    KillTimer(window,1);
+    if(coop_mode || menu_session)coop_lan_close();
     pad_close();xr_close();mouse_release();render_reset();frontend_free();audio_stop();
     tomb_sound_output_close(ring_sound_output);tomb_sound_output_close(sound_output);tomb_sound_bank_free(&sound_bank);
     glDeleteTextures((GLsizei)visual->tile_count,font_tiles);free(font_tiles);glDeleteTextures((GLsizei)(visual->tile_count*2+2),tiles); free(tiles);
+    glDeleteTextures(1,&crystal_scene);
     glDeleteTextures(2,shadow_textures);
     light_DeleteProgram(shade_program);
     wglMakeCurrent(NULL,NULL); wglDeleteContext(context); ReleaseDC(window,dc); DestroyWindow(window);

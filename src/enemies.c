@@ -1,4 +1,5 @@
 #include "enemies.h"
+#include "playtest.h"
 #include "pistols.h"
 #include "peru.h"
 #include "folly.h"
@@ -14,6 +15,16 @@
 int tomb_enemy_object(int id){return id==33 || id==34 || id==6 || id==145 || (id>=30 && id<=32) || (id>=20 && id<=23) || id==16 || id==17 || id==10 || id==11 || id==12 || id==13 || id==14 || id==15 || id==28 || (id>=7 && id<=9) || id==18 || id==19 || id==24 || id==27;}
 static int slot(const TombEnemies *e,size_t id){for(int k=0;k<8;k++)if(e->slots[k]==(int)id)return k;return -1;}
 static int32_t distance(const TombEnemies *e,const TombActor *a) {
+    if(e->targets){
+        int32_t nearest=INT32_MAX;
+        for(int i=0;i<2;i++){
+            if(e->players[i]->health<=0)continue;
+            const TombActor *p=&e->players[i]->actor;
+            int x=(a->x-p->x)/256,y=(a->y-p->y)/256,z=(a->z-p->z)/256;
+            int32_t d=x*x+y*y+z*z;if(d<nearest)nearest=d;
+        }
+        return nearest;
+    }
     int32_t x=tomb_asr(a->x-e->camera[0],8),y=tomb_asr(a->y-e->camera[1],8),z=tomb_asr(a->z-e->camera[2],8);
     return tomb_long((int64_t)x*x+(int64_t)y*y+(int64_t)z*z);
 }
@@ -117,6 +128,7 @@ void tomb_enemies_room_sync(TombObjects *w) {
     }
 }
 void tomb_enemies_trigger(TombObjects *w,size_t id,int type,uint16_t flags) {
+
     if(w->no_enemies && removable_enemy(w->items[id].object)){
         if(w->enemies->items[id].health==-16384)return;
         tomb_object_trigger(w->items+id,type,flags);
@@ -127,6 +139,9 @@ void tomb_enemies_trigger(TombObjects *w,size_t id,int type,uint16_t flags) {
     if(w->items[id].object>=20 && w->items[id].object<=23 && w->enemies->items[id].health==-16384)return;
     TombObject *o=w->items+id;uint8_t before=o->actor.flags;int active=o->active;
     tomb_object_trigger(o,type,flags);
+    if(o->object==6 && id<w->source_count && w->enemies->targets && w->enemies->targets[id].clone_pair){
+        tomb_enemies_trigger(w,(size_t)(w->enemies->targets[id].clone_pair-1),type,flags);
+    }
     if(active || !o->active)return;
     o->active=0;o->actor.flags=before;
     if((before&6)==0){o->actor.flags=(before&~6u)|2;w->enemies->items[id].touch=0;add(w,id);tomb_enemies_activate(w,id,1);}
@@ -160,14 +175,98 @@ int tomb_enemies_init(TombObjects *w) {
 }
 void tomb_enemies_free(TombObjects *w) {
     TombEnemies *e=w->enemies;if(!e)return;for(int k=0;k<8;k++)tomb_navigation_free(e->navigation+k);
+    free(e->route_queue);free(e->reachable);free(e->targets);
     free(e->items);free(e->next);free(e->room_head);free(e->room_next);free(e->room_id);free(e);w->enemies=NULL;
 }
-int tomb_enemies_tick(TombObjects *w,TombAnimContext *ctx,TombLaraStart *lara) {
+int tomb_enemies_coop_init(TombObjects *w,TombPlaytest *host,TombPlaytest *guest){
+    TombEnemies *e=w->enemies;
+    e->targets=calloc(w->count,sizeof *e->targets);
+    e->reachable=calloc(w->level->box_count,1);
+    e->route_queue=calloc(w->level->box_count,sizeof *e->route_queue);
+    e->players[0]=&host->lara;e->players[1]=&guest->lara;
+    e->player_animation[0]=&host->animation;e->player_animation[1]=&guest->animation;
+    if(!e->targets || !e->reachable || !e->route_queue)return 0;
+    for(size_t i=0;i<w->source_count;i++){
+        if(w->items[i].object!=6 || w->no_enemies)continue;
+        int copy=tomb_objects_spawn(w,6,&w->items[i].actor);
+        if(copy<0)return 0;
+        w->items[copy]=w->items[i];e->items[copy]=e->items[i];
+        e->targets[i].clone_pair=copy+1;e->targets[copy].clone_pair=(int)i+1;
+        if(w->items[i].active)add(w,(size_t)copy);
+    }
+    return 1;
+}
+void tomb_enemy_hit(TombObjects *w,size_t id,const TombLaraStart *shooter){
+    TombEnemies *e=w->enemies;
+    if(!e->targets || w->items[id].object==6 || w->items[id].object==145 || e->items[id].health<=0)return;
+    TombEnemyTarget *target=e->targets+id;
+    int player=shooter==e->players[0]?1:2;
+    if(!target->cooldown && target->player!=player){
+        target->player=(unsigned char)player;target->cooldown=90;
+    }
+}
+/* Walk the current box graph in the direction the creature can travel.
+   Same-zone boxes can still be separated by a closed door or a high step. */
+static void enemy_routes(TombObjects *w,const TombActor *actor,const TombNavigation *nav){
+    TombEnemies *e=w->enemies;const TombLevel *l=w->level;
+    const int16_t *zones=l->zones+l->box_count*(nav->fly?2:nav->step==256?0:1);
+    memset(e->reachable,0,l->box_count);
+    int first=tomb_navigation_box(l,actor);
+    if(first<0)return;
+    int head=0,tail=0;e->route_queue[tail++]=first;e->reachable[first]=1;
+    while(head<tail){
+        int from=e->route_queue[head++];
+        const TombCameraBox *box=l->boxes+from;
+        for(size_t at=box->overlap&0x3fff;at<l->overlap_count;at++){
+            unsigned link=l->overlaps[at];int to=link&0x7fff;
+            if((size_t)to<l->box_count && !e->reachable[to] && zones[first]==zones[to]){
+                const TombCameraBox *next=l->boxes+to;int step=box->height-next->height;
+                if(!(next->overlap&nav->block) && step>=nav->drop && step<=nav->step){
+                    e->reachable[to]=1;e->route_queue[tail++]=to;
+                }
+            }
+            if(link&0x8000)break;
+        }
+    }
+}
+static int enemy_target(TombObjects *w,int id,const TombNavigation *nav){
+    TombEnemies *e=w->enemies;TombEnemyTarget *t=e->targets+id;
+    TombActor *actor=&w->items[id].actor;
+    if(nav)enemy_routes(w,actor,nav);
+    int object=w->items[id].object;
+    int ranged=(object>=20 && object<=23) || object==27 || object==28 || (object>=30 && object<=33);
+    if(t->cooldown)--t->cooldown;
+    int best=0,best_access=-1;
+    int64_t nearest=INT64_MAX;
+    for(int i=0;i<2;i++){
+        TombLaraStart *candidate=e->players[i];const TombActor *a=&candidate->actor;
+        if(candidate->health<=0)continue;
+        int box=tomb_navigation_box(w->level,a);
+        int64_t x=(int64_t)a->x-actor->x,y=(int64_t)a->y-actor->y,z=(int64_t)a->z-actor->z;
+        int64_t d=x*x+y*y+z*z;
+        int access=!nav || (box>=0 && e->reachable[box]) || t->contact[i];
+        if(!access && ranged && d<0x3100000){
+            TombCameraPoint eye={actor->x,actor->y-384,actor->z,actor->room};
+            TombCameraPoint body={a->x,a->y-384,a->z,a->room};
+            access=tomb_dos_camera_los(w->level,&eye,&body,0);
+        }
+        /* A route or clear shot helps choose between players. Activation alone
+           starts the controller, even when neither player is reachable. */
+        if(access && t->player==i+1)return i+1;
+        if(access>best_access || (access==best_access && d<nearest)){
+            best=i+1;best_access=access;nearest=d;
+        }
+    }
+    if(t->player!=best){t->player=(unsigned char)best;t->cooldown=0;}
+    return best;
+}
+int tomb_enemies_tick(TombObjects *w,TombAnimContext *ctx,TombLaraStart *primary) {
     TombEnemies *e=w->enemies;if(!e)return 1;
     tomb_enemies_room_sync(w);
     int previous=-1,index=e->head;
     while(index>=0) {
         TombObject *o=w->items+index;TombCreature *c=e->items+index;int next=e->next[index];
+        TombLaraStart *lara=primary;
         if(o->object==6 || o->object==145){previous=index;index=next;continue;}
         /* Only one non-final Pierre encounter can own the active slot. The
            active list is newest-first, so its oldest surviving Pierre owns it. */
@@ -184,6 +283,12 @@ int tomb_enemies_tick(TombObjects *w,TombAnimContext *ctx,TombLaraStart *lara) {
             o->actor.flags=(o->actor.flags&~6u)|2;
         }
         if(o->object==24){
+            if(e->targets){
+                int player=enemy_target(w,index,NULL);
+                if(player){lara=e->players[player-1];c->touch=e->targets[index].contact[player-1];}
+                else c->touch=0;
+                memset(e->targets[index].contact,0,sizeof e->targets[index].contact);
+            }
             tomb_mummy_control(o,c,&lara->actor);if(!tomb_object_animate(o,ctx))return 0;
             if((o->actor.flags&6)==4){o->active=0;o->actor.flags&=(uint8_t)~1u;c->health=-16384;if(previous<0)e->head=next;else e->next[previous]=next;e->next[index]=-1;}else previous=index;
             index=next;continue;
@@ -197,6 +302,12 @@ int tomb_enemies_tick(TombObjects *w,TombAnimContext *ctx,TombLaraStart *lara) {
             if(previous<0)e->head=next;else e->next[previous]=next;e->next[index]=-1;index=next;continue;
         }
         TombNavigation *n=e->navigation+k;TombCreatureInfo info={0};int16_t turn=0;int targetable=0;
+        if(e->targets && (c->health>0 || (o->object==33 && c->health<=-16384))){
+            int player=enemy_target(w,index,n);
+            if(player){lara=e->players[player-1];c->touch=e->targets[index].contact[player-1];}
+            memset(e->targets[index].contact,0,sizeof e->targets[index].contact);
+            if(!player)c->touch=0;
+        }
         if(o->object==28 && !(o->flags&0x100) && c->health<=40){c->health=40;c->flags++;}
         if(c->health>0 || (o->object==33 && c->health<=-16384)) {
             int16_t bounds[6];if(!tomb_visual_bounds(w->visual,&lara->actor,bounds))return 0;
@@ -247,7 +358,9 @@ int tomb_enemies_tick(TombObjects *w,TombAnimContext *ctx,TombLaraStart *lara) {
             TombModel extra;if(!tomb_visual_model(w->visual,5,&extra) || (size_t)extra.animation+1>=ctx->animation_count)return 0;
             TombActor *a=&lara->actor;a->x=o->actor.x;a->y=o->actor.y;a->z=o->actor.z;a->room=o->actor.room;a->yaw=o->actor.yaw;
             a->animation=(int16_t)(extra.animation+(o->object==18));a->frame=ctx->animations[a->animation].first_frame;a->current=a->goal=46;a->flags&=(uint8_t)~8u;
-            lara->pitch=0;lara->health=lara->air=-1;ctx->weapon_status=1;
+            lara->pitch=0;lara->health=lara->air=-1;if(e->targets && lara!=primary){
+                e->player_animation[1]->weapon_status=1;
+            }else ctx->weapon_status=1;
         }
         if(d.blood>=172 && d.blood<=174){
             int32_t muzzle[3]={o->object==23?11:d.blood==172?-35:51,o->object==23?415:d.blood==172?269:213,o->object==23?41:0};
@@ -360,8 +473,19 @@ int tomb_enemies_tick(TombObjects *w,TombAnimContext *ctx,TombLaraStart *lara) {
         }
         if(o->object==28 && c->flags){
             TombCameraPoint from={e->camera[0],e->camera[1],e->camera[2],lara->actor.room},to={o->actor.x,o->actor.y-1024,o->actor.z,o->actor.room};
-            TombSectorRef ref;if(tomb_find_sector(w->level,from.x,from.y,from.z,from.room,&ref))from.room=(int16_t)ref.room;
-            if(tomb_dos_camera_los(w->level,&from,&to,0))c->flags=1;
+            int seen=0;
+            if(e->targets){
+                for(int i=0;i<2;i++){
+                    TombLaraStart *p=e->players[i];if(p->health<=0)continue;
+                    from=(TombCameraPoint){p->actor.x,p->actor.y-650,p->actor.z,p->actor.room};
+                    TombCameraPoint target=to;
+                    if(tomb_dos_camera_los(w->level,&from,&target,0)){seen=1;break;}
+                }
+            }else{
+                TombSectorRef ref;if(tomb_find_sector(w->level,from.x,from.y,from.z,from.room,&ref))from.room=(int16_t)ref.room;
+                seen=tomb_dos_camera_los(w->level,&from,&to,0);
+            }
+            if(seen)c->flags=1;
             else if(c->flags>10){c->health=-16384;o->actor.flags=(o->actor.flags&~33u)|6;o->active=0;o->flags|=0x100;moved=0;}
         }
         if(o->object==28 && tomb_water_height(w->level,o->actor.x,o->actor.z,o->actor.room)!=-32512){c->health=-16384;o->actor.flags=(o->actor.flags&~33u)|6;o->active=0;o->flags|=0x100;moved=0;}

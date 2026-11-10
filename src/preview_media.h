@@ -45,6 +45,13 @@ static int media_messages(MediaAudio *a,HWND window,int *active){
     if(now!=*active){media_cursor_refresh();if(a->device){if(now)waveOutRestart(a->device);else waveOutPause(a->device);}*active=now;}
     return running && !media_skip;
 }
+/* A paused desktop movie must keep pumping messages without submitting GPU work. */
+static int media_wait_in_background(int active,LARGE_INTEGER *last){
+    if(active!=0 || xr.instance)return 0;
+    MsgWaitForMultipleObjectsEx(0,NULL,50,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+    QueryPerformanceCounter(last);
+    return 1;
+}
 static void media_begin(void){if(xr.begun)xr_end(0,0);xr.panel_open=0;mouse_release();media_busy=1;media_cursor_refresh();media_skip=0;pad_blocked|=pad_buttons;pad_frame(0,GetActiveWindow()==WindowFromDC(wglGetCurrentDC()));media_skip=0;audio_stop();tomb_sound_output_update(sound_output,1);tomb_sound_output_update(ring_sound_output,1);memset(held_keys,0,sizeof held_keys);}
 static void media_end(void){if(xr.begun)xr_end(0,0);xr.panel_open=0;media_busy=0;media_cursor_refresh();media_skip=0;accumulator=0;memset(held_keys,0,sizeof held_keys);glEnable(GL_DEPTH_TEST);glDepthMask(GL_TRUE);glColor3f(1,1,1);}
 static int media_audio_check(void){
@@ -95,6 +102,7 @@ static int play_movie(const char *name,int test){
     LARGE_INTEGER frequency,last,now;QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&last);double elapsed=0;int active=-1;unsigned previous=UINT_MAX;
     for(unsigned iteration=0;running;iteration++){
         if(!test && !media_messages(&audio,window,&active))break;
+        if(media_wait_in_background(active,&last))continue;
         QueryPerformanceCounter(&now);if(active==1)elapsed+=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart;last=now;
         unsigned frame=test?(iteration<2?0:iteration<4?movie.frames/2:movie.frames-1):(unsigned)(media_clock(&audio,elapsed,movie.rate)*movie.numerator/movie.denominator);
         if(frame>=movie.frames)break;
@@ -162,6 +170,7 @@ static int play_cutscene_sequence(int test,int number){
     HDC dc=wglGetCurrentDC();HWND window=WindowFromDC(dc);LARGE_INTEGER frequency,last,now;QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&last);double elapsed=0;int active=-1;unsigned tick=0;
     while(ok && running && sequence.frame<sequence.count){
         if(!test && !media_messages(&audio,window,&active))break;
+        if(media_wait_in_background(active,&last))continue;
         QueryPerformanceCounter(&now);if(active==1)elapsed+=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart;last=now;
         unsigned wanted=test?tick++:(unsigned)(media_clock(&audio,elapsed,44100)*30);
         /* DOS 14d22..14d45 exits on the terminal control tick before drawing.
@@ -246,7 +255,8 @@ static int play_ending(int test){
                 if(media_skip && fade_start<0){fade_from=credits_brightness(elapsed,-1,1);fade_start=elapsed;}
                 media_skip=0;
             }
-            QueryPerformanceCounter(&now);if(active==1)elapsed+=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart;last=now;
+            if(media_wait_in_background(active,&last))continue;
+        QueryPerformanceCounter(&now);if(active==1)elapsed+=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart;last=now;
             if(test){static const double frames[]={0,.5,1,CREDITS_HOLD,CREDITS_HOLD+CREDITS_FADE_OUT/2,CREDITS_HOLD+CREDITS_FADE_OUT};elapsed=frames[test_frame++];}
             float brightness=credits_brightness(elapsed,fade_start,fade_from);
             light_UseProgram(0);glDisable(GL_DEPTH_TEST);glDisable(GL_ALPHA_TEST);glDisable(GL_BLEND);glDisable(GL_SCISSOR_TEST);glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_MODULATE);glViewport(0,0,width,height);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);

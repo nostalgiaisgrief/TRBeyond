@@ -32,7 +32,7 @@ static void pad_frame(double dt,int focused){
  for(int i=0;i<16;i++){
   PadDevice *d=pad_devices+i;if(!d->handle)continue;
   if(!SDL_GamepadConnected(d->handle)){
-   if(pad_active==d->handle){pad_active=NULL;pad_buttons=pad_pressed=0;pad_move_x=pad_move_z=pad_look_x=pad_look_y=0;draw_requested=0;pad_replacing=1;if(!title_mode)paused=1;}
+   if(pad_active==d->handle){pad_active=NULL;pad_buttons=pad_pressed=0;pad_move_x=pad_move_z=pad_look_x=pad_look_y=0;draw_requested=0;pad_replacing=1;if(!title_mode && !coop_mode)paused=1;}
    SDL_CloseGamepad(d->handle);memset(d,0,sizeof *d);continue;
   }
   uint64_t bits=pad_read(d->handle),pressed=bits&~d->buttons;d->buttons=bits;
@@ -73,6 +73,7 @@ static void pad_frame(double dt,int focused){
   pad_deadzone(&x,&z,pad_profiles[menu_mode].move_deadzone);pad_deadzone(&lx,&ly,pad_profiles[menu_mode].look_deadzone);
  }
  if(inventory_open && pad_stick_blocked){if(x==0 && z==0)pad_stick_blocked=0;x=z=0;}
+ if(coop_mode){if(pad_action(pad_pressed,PAD_DRAW))draw_requested=1;return;}
  if(binding_wait){
   pad_silence();if(!pad_wait)return;
   for(int c=0;c<PAD_CODES;c++)if(pad_pressed&(UINT64_C(1)<<c)){

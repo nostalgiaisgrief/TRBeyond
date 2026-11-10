@@ -17,6 +17,7 @@ typedef struct TombDoor {
     unsigned count;
     int open;
 } TombDoor;
+typedef struct TombObjectCamera { int index,last,target,timer,speed,active; } TombObjectCamera;
 typedef struct TombObjects {
     TombLevel *level;
     const TombVisual *visual;
@@ -26,7 +27,7 @@ typedef struct TombObjects {
     size_t count;
     unsigned deferred_actions;
     /* active follows DOS camera types: 0 chase, 1 fixed, 5 heavy. */
-    struct { int index,last,target,timer,speed,active; } camera;
+    TombObjectCamera camera;
     uint8_t camera_once[128]; /* Camera action IDs are ten bits. */
     struct TombHazards *hazards;
     struct TombEnemies *enemies;
@@ -35,6 +36,7 @@ typedef struct TombObjects {
     struct TombPeru *peru;
     struct TombNavigation *current;
     int16_t current_strength;
+    uint8_t *pickup_claims; /* One bit per player in a shared pickup encounter. */
     int invincible; /* Derived from the active game's custom options. */
     size_t source_count; /* Original trigger indices precede reserved spawned items. */
     int no_enemies; /* Derived from gameplay options; Scion remains interactive. */
@@ -53,6 +55,7 @@ TOMB_EXPORT int tomb_late_object_control(TombObject *);
 TOMB_EXPORT int tomb_object_animate(TombObject *,TombAnimContext *);
 TOMB_EXPORT int tomb_object_animate_required(TombObject *,TombAnimContext *,int16_t *);
 TOMB_EXPORT int tomb_switch_bounds(const TombActor *,const TombActor *,int16_t pitch,int16_t roll);
+int tomb_objects_init_session(TombObjects *,TombLevel *,const TombVisual *,int coop);
 TOMB_EXPORT int tomb_objects_init(TombObjects *,TombLevel *,const TombVisual *);
 TOMB_EXPORT void tomb_objects_reset(TombObjects *);
 TOMB_EXPORT void tomb_objects_free(TombObjects *);

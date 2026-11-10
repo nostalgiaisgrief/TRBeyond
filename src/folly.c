@@ -142,24 +142,58 @@ int tomb_lava_touch(TombPlaytest *p){
 /* Doppelganger 291b4, waterfall 1dd4c, Scion 30184, earthquake 30310. */
 int tomb_late_world_tick(TombPlaytest *p){
     TombObjects *w=p->objects;TombActor *lara=&p->lara.actor;TombAnimContext *ctx=&p->animation;
+    if(w->enemies->targets){
+        /* Settle both players' reflected hits before either clone can land. */
+        for(size_t i=0;i<w->count;i++){
+            TombCreature *clone=w->enemies->items+i;
+            if(!w->enemies->targets[i].clone_pair || clone->flags==-2 || clone->health>=1000)continue;
+            TombLaraStart *owner=w->enemies->players[i>=w->source_count];
+            if(!w->invincible && owner->health>0){
+                int health=owner->health-10*(1000-clone->health);
+                owner->health=(int16_t)(health>0?health:0);
+            }
+            clone->health=1000;
+        }
+    }
     for(size_t j=0;j<w->count;j++){
         TombObject *o=w->items+j;TombActor *a=&o->actor;TombCreature *c=w->enemies->items+j;
         if(!o->active)continue;
         if(o->object==6){
-            if(c->health<1000){if(!w->invincible)p->lara.health=tomb_word(p->lara.health-10*(1000-c->health));c->health=1000;}
+            int pair=w->enemies->targets?w->enemies->targets[j].clone_pair:0;
+            TombPlaytest *owner=pair && j>=w->source_count?p->coop_partner:p;
+            TombActor *lara=&owner->lara.actor;
+            if(!pair && c->health<1000){
+                if(!w->invincible)owner->lara.health=tomb_word(owner->lara.health-10*(1000-c->health));
+                c->health=1000;
+            }
             if(!c->flags){
-                TombActor mirror=*lara;mirror.x=0x12000-lara->x;mirror.z=0x1e000-lara->z;mirror.room=a->room;
-                TombHeights mh,lh;if(!folly_floor(w,&mirror,&mh))return 0;
+                TombActor mirror=*lara;mirror.x=0x12000-lara->x;mirror.z=0x1e000-lara->z;mirror.room=pair?lara->room:a->room;
+                TombHeights mh,lh;if(!folly_floor(w,&mirror,&mh)){if(pair)continue;return 0;}
                 TombActor probe=*lara;if(!folly_floor(w,&probe,&lh))return 0;
                 a->x=mirror.x;a->y=mirror.y;a->z=mirror.z;a->room=lara->room;a->animation=lara->animation;a->frame=lara->frame;a->yaw=tomb_word(lara->yaw-32768);
-                c->pitch=p->lara.pitch;c->roll=p->movement.lean;c->floor=mh.floor;
-                if(mh.floor>=lh.floor+1024 && !(lara->flags&8)){a->goal=a->current=9;a->animation=32;a->frame=481;a->fall_speed=a->speed=0;a->flags|=8;a->y+=50;c->flags=-1;}
+                c->pitch=owner->lara.pitch;c->roll=owner->movement.lean;c->floor=mh.floor;
+                if(pair)a->room=mirror.room;
+                const TombRoom *room=w->level->rooms+mirror.room;
+                int valid_mirror=!pair || (mh.floor!=-32512 && lh.floor!=-32512 && owner->lara.health>0 &&
+                    mirror.x>=room->x && mirror.x<room->x+room->nx*1024 && mirror.z>=room->z && mirror.z<room->z+room->nz*1024);
+                if(valid_mirror && mh.floor>=lh.floor+1024 && !(lara->flags&8)){a->goal=a->current=9;a->animation=32;a->frame=481;a->fall_speed=a->speed=0;a->flags|=8;a->y+=50;c->flags=-1;}
             }
             if(c->flags){
                 if(!tomb_object_animate(o,ctx))return 0;
+                if(pair && c->flags==-2)continue;
                 TombHeights h;if(!folly_floor(w,a,&h))return 0;c->floor=h.floor;
-                if(!tomb_objects_trigger_heavy(w,h.trigger_index))return 0;
-                if(a->y>=h.floor){a->y=h.floor;if(!folly_floor(w,a,&h) || !tomb_objects_trigger_heavy(w,h.trigger_index))return 0;a->fall_speed=0;a->goal=c->required=8;a->flags&=(uint8_t)~8u;}
+                if(!pair && !tomb_objects_trigger_heavy(w,h.trigger_index))return 0;
+                if(a->y>=h.floor){a->y=h.floor;if(!folly_floor(w,a,&h) || !tomb_objects_trigger_heavy(w,h.trigger_index))return 0;a->fall_speed=0;a->goal=c->required=8;a->flags&=(uint8_t)~8u;
+                    if(pair){
+                        TombObject *other=w->items+pair-1;TombCreature *mate=w->enemies->items+pair-1;
+                        c->health=mate->health=-16384;c->flags=mate->flags=-2;
+                        /* Use Lara's fatal landing, including when the partner was standing still. */
+                        a->animation=25;a->frame=ctx->animations[25].first_frame;
+                        a->current=ctx->animations[25].state;
+                        other->actor.animation=a->animation;other->actor.frame=a->frame;
+                        other->actor.current=a->current;other->actor.goal=mate->required=8;
+                        other->actor.speed=other->actor.fall_speed=0;other->actor.flags&=(uint8_t)~8u;
+                    }}
             }
         }else if(o->object==145){
             if(c->health>0){c->flags=0;if(!tomb_object_animate(o,ctx))return 0;}

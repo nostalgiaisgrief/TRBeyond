@@ -137,9 +137,17 @@ int tomb_atlantean_spawners_init(TombObjects *w){
 int tomb_atlantean_spawners_tick(TombObjects *w,TombAnimContext *ctx,const TombActor *lara){
     for(size_t i=0;i<w->source_count;i++){
         TombObject *o=w->items+i;if(!o->active || (o->object!=161 && o->object!=163 && o->object!=181))continue;
-        TombCreature *c=w->enemies->items+i;int64_t dx=(int64_t)lara->x-o->actor.x,dz=(int64_t)lara->z-o->actor.z;int dy=lara->y-o->actor.y;
+        TombCreature *c=w->enemies->items+i;
         int statue=o->object==161;
-        int hatch=statue?abs(dy)<1024 && dx*dx+dz*dz<0xc40000:(o->flags&0x100) || o->object==181 || (llabs(dx)<4096 && llabs(dz)<4096 && abs(dy)<4096);
+        int hatch=!statue && ((o->flags&0x100) || o->object==181);
+        int paired=w->enemies->targets!=NULL;
+        for(int player=0;!hatch && player<(paired?2:1);player++){
+            if(paired && w->enemies->players[player]->health<=0)continue;
+            const TombActor *a=paired?&w->enemies->players[player]->actor:lara;
+            int64_t dx=(int64_t)a->x-o->actor.x,dz=(int64_t)a->z-o->actor.z;
+            int dy=a->y-o->actor.y;
+            hatch=statue?abs(dy)<1024 && dx*dx+dz*dz<0xc40000:llabs(dx)<4096 && llabs(dz)<4096 && abs(dy)<4096;
+        }
         if(!c->flags && hatch){
             int index=c->required-1;if(index>=0 && (size_t)index>=w->count)return 0;
             if(!tomb_explode_meshes(w,o,NULL,statue?UINT32_MAX:0xfffe00,0,ctx->sine_quarter))return 0;

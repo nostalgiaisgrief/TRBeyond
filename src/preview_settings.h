@@ -59,10 +59,10 @@ static void settings_apply_preset(int preset){
     settings_detail=preset==1?0:preset==2?1:preset==3?3:2;
     settings_force43=preset!=0;
     settings_framerate=preset==0?0:2;
-    settings_full_colour=preset==2 || preset==3;
+    settings_full_colour=preset!=1;
     settings_texture_filtering=preset==2;
     settings_water_style=preset==0?3:preset==3?0:preset;
-    settings_draw_distance=preset==0?1:0;
+    settings_draw_distance=preset==0?DRAW_SMOOTH_FOG:DRAW_ORIGINAL;
 }
 
 static void settings_read(void){
@@ -86,7 +86,9 @@ static void settings_read(void){
     GetPrivateProfileStringA("Display","water_style",visual_style_names[settings_water_style],style,sizeof style,path);
     settings_water_style=1;for(int i=0;i<4;i++)if(!strcmp(style,visual_style_names[i]))settings_water_style=i;
     GetPrivateProfileStringA("Display","draw_distance",draw_distance_names[settings_draw_distance],style,sizeof style,path);
-    for(int i=0;i<3;i++)if(!strcmp(style,draw_distance_names[i]))settings_draw_distance=i;
+    static const char *const old_distance_names[DRAW_DISTANCE_COUNT]={"Original","Max Surfaces No Fog","Max Surfaces With Fog","Max Surfaces With Smooth Fog"};
+    for(int i=0;i<DRAW_DISTANCE_COUNT;i++)
+        if(!strcmp(style,draw_distance_names[i]) || !strcmp(style,old_distance_names[i]))settings_draw_distance=i;
     settings_force43=GetPrivateProfileIntA("Display","force43",settings_force43,path)!=0;
     settings_framerate=(int)GetPrivateProfileIntA("Display","framerate",settings_framerate,path);
     if(settings_framerate<0 || settings_framerate>2)settings_framerate=0;
