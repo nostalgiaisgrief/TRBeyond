@@ -5,6 +5,7 @@
 #include <wchar.h>
 #include <avrt.h>
 #include <stdlib.h>
+#include <string.h>
 #include "sound_win.h"
 #define BLOCKS 3
 #define FRAMES 1024
@@ -27,6 +28,7 @@ struct TombSoundOutput {
     CRITICAL_SECTION lock; HANDLE ready,stop,thread;
     int paused,failed,primed,volume,gain;unsigned prepared;
     TombSoundOutputStats stats;
+    uint64_t track_start;
 };
 static DWORD WINAPI pump(void *user) {
     TombSoundOutput *o=user;HANDLE events[2]={o->stop,o->ready};
@@ -104,6 +106,26 @@ void tomb_sound_output_reset(TombSoundOutput *o) {
     if(waveOutReset(o->device)!=MMSYSERR_NOERROR)o->failed=1;
     if(o->paused && waveOutPause(o->device)!=MMSYSERR_NOERROR)o->failed=1;
     tomb_sound_clear(o->mixer);o->primed=0;SetEvent(o->ready);LeaveCriticalSection(&o->lock);
+}
+void tomb_sound_output_track(TombSoundOutput *o,TombSoundBank *bank,TombSoundSample *storage,const TombSoundSample *sample,int loop,int gain,int volume){
+    if(!o)return;
+    EnterCriticalSection(&o->lock);
+    /* Already submitted buffers retain the old audio. The new track starts
+       after them, so completion must use this boundary, not device lifetime. */
+    o->track_start=(uint64_t)o->stats.blocks*FRAMES;
+    *storage=*sample;memset(bank,0,sizeof *bank);bank->samples=storage;bank->sample_count=1;
+    tomb_sound_init(o->mixer,bank);
+    if(sample->pcm && sample->frames)o->mixer->voices[0]=(TombSoundVoice){.active=1,.volume=32767,.pitch=100,.mode=loop?2:0};
+    o->gain=gain<0?0:gain>32767?32767:gain;o->volume=volume<0?0:volume>10?10:volume;
+    LeaveCriticalSection(&o->lock);SetEvent(o->ready);
+}
+unsigned tomb_sound_output_track_samples(TombSoundOutput *o){
+    if(!o)return 0;
+    EnterCriticalSection(&o->lock);
+    MMTIME t={0};t.wType=TIME_SAMPLES;unsigned result=0;
+    if(waveOutGetPosition(o->device,&t,sizeof t)==MMSYSERR_NOERROR && t.wType==TIME_SAMPLES && t.u.sample>o->track_start)
+        result=(unsigned)(t.u.sample-o->track_start);
+    LeaveCriticalSection(&o->lock);return result;
 }
 void tomb_sound_output_close(TombSoundOutput *o) {
     if(!o)return;

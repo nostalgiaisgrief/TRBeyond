@@ -123,9 +123,9 @@ static void vr_item_trigger(TombPlaytest *p,int item,int type){
             if(at+2>=p->level->floor_count || (p->level->floor_data[at]&255)!=4 || ((p->level->floor_data[at]>>8)&63)!=(unsigned)type || (p->level->floor_data[at+2]&1023)!=item)continue;
             int duplicate=0;for(int i=0;i<count;i++)if(seen[i]==at)duplicate=1;if(duplicate)continue;
             if(count<128)seen[count++]=at;
-            if(count==1)tomb_objects_trigger_keys(p->objects,at,1,0);else tomb_objects_trigger_activated(p->objects,at);
         }
     }
+    tomb_objects_trigger_group(p->objects,seen,(size_t)count);
 }
 static void vr_lever_event(void *user,int kind,int16_t value,TombActor *actor){
     (void)actor;if(kind==5)((TombVrHand *)user)->lever_sound=value&0x3fff;

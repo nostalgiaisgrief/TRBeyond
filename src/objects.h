@@ -64,6 +64,7 @@ TOMB_EXPORT void tomb_objects_camera_begin(TombObjects *);
 int tomb_objects_interact(TombObjects *,TombActor *,TombAnimContext *,uint32_t input,int16_t pitch,int16_t roll);
 TOMB_EXPORT int tomb_objects_trigger_keys(TombObjects *,size_t,int,int);
 int tomb_objects_trigger_activated(TombObjects *,size_t);
+int tomb_objects_trigger_group(TombObjects *,const size_t *,size_t);
 TOMB_EXPORT int tomb_objects_trigger_camera(TombObjects *,size_t,int,int,int camera_mode);
 TOMB_EXPORT int tomb_objects_trigger_heavy(TombObjects *,size_t);
 TOMB_EXPORT int tomb_objects_trigger(TombObjects *,size_t trigger,int grounded);

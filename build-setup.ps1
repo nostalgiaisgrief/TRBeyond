@@ -32,7 +32,7 @@ try {
     Copy-Item -LiteralPath third_party/openxr/LICENSE -Destination "$payload/OPENXR-LICENSE.txt" -Force
     Copy-Item -LiteralPath third_party/SDL3/bin/SDL3.dll -Destination "$payload/SDL3.dll" -Force
     Copy-Item -LiteralPath third_party/SDL3/LICENSE.txt -Destination "$payload/SDL3-LICENSE.txt" -Force
-    & $Python tools/prepare_ub.py data_reference_files/UB/DATA "$payload/Source/UB"
+    & $Python tools/prepare_ub.py data_reference_files/UB/DATA "$payload/Source/TR1/UB"
     if ($LASTEXITCODE -ne 0) { throw 'Unfinished Business asset preparation failed' }
     # Remove documentation staged by earlier builds; only runtime files ship.
     Get-ChildItem -LiteralPath $payload -File -Filter '*.md' | ForEach-Object {

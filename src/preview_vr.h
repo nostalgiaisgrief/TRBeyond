@@ -77,26 +77,10 @@ static void vr_hands_draw(void){
         if(hand->hover>=0)model_light.adder=model_light.adder>1024?model_light.adder-1024:0;
         mesh(visual->meshes+id);
         if(hand->flash>0)vr_gun_flash(visual->meshes+id,hand->weapon);glPopMatrix();
-        if(hand->key){TombModel key;if(tomb_visual_model(visual,hand->key,&key) && key.mesh_count){
-            double grip[16];tomb_vr_matrix(&vr,&vr.input.hand[h],grip);grip[13]+=vr.view_offset;
+        if(hand->key){TombModel key;double grip[16];if(tomb_vr_key_matrix(&vr,&play,h,&key,grip)){
+            grip[13]+=vr.view_offset;
             const TombMeshView *item=visual->meshes+key.mesh_start;
-            int lo[3]={32767,32767,32767},hi[3]={-32768,-32768,-32768};
-            for(unsigned n=0;n<item->vertex_count;n++)for(int j=0;j<3;j++){
-                const unsigned char *b=item->vertices+n*item->vertex_stride+j*2;int value=(int16_t)(b[0]|b[1]<<8);
-                if(value<lo[j])lo[j]=value;if(value>hi[j])hi[j]=value;
-            }
-            /* Measure the rendered hand in grip space: authored item origins
-               vary, so align its bottom to the hand rather than a fixed offset. */
-            double hand_lo[3]={1e9,1e9,1e9},hand_hi[3]={-1e9,-1e9,-1e9};
-            const TombMeshView *palm=visual->meshes+id;
-            for(unsigned n=0;n<palm->vertex_count;n++){
-                double vertex[3],world[3];for(int j=0;j<3;j++){const unsigned char *b=palm->vertices+n*palm->vertex_stride+j*2;vertex[j]=(int16_t)(b[0]|b[1]<<8);}
-                for(int j=0;j<3;j++)world[j]=matrix[12+j]-grip[12+j]+matrix[j]*vertex[0]+matrix[4+j]*vertex[1]+matrix[8+j]*vertex[2];
-                for(int j=0;j<3;j++){double a=grip[j*4]*world[0]+grip[j*4+1]*world[1]+grip[j*4+2]*world[2];hand_lo[j]=fmin(hand_lo[j],a);hand_hi[j]=fmax(hand_hi[j],a);}
-            }
-            glPushMatrix();glMultMatrixd(grip);glTranslated((hand_lo[0]+hand_hi[0])*.5,hand_lo[1],(hand_lo[2]+hand_hi[2])*.5);glScaled(.5,.5,.5);
-            glRotated(180,1,0,0);
-            glTranslated(-(lo[0]+hi[0])*.5,-hi[1],-(lo[2]+hi[2])*.5);mesh(item);glPopMatrix();
+            glPushMatrix();glMultMatrixd(grip);mesh(item);glPopMatrix();
         }}
         memcpy(wrist_models[h],matrix,sizeof matrix);wrist_valid[h]=1;
     }
@@ -150,7 +134,11 @@ static void vr_menu_input(const TombVrInput *input,double dt){
     }else if(objects.progress->complete)load_next_level();}
     primary=a;secondary=b;
     int next=0;float x=input->stick[0][0],y=input->stick[0][1];
-    if(fabs(x)>.6 || fabs(y)>.6)next=fabs(x)>fabs(y)?(x>0?TOMB_RING_RIGHT:TOMB_RING_LEFT):(y>0?16:32);
+    /* Apply the movement deadzone before the deliberate menu deflection.
+       Raising it must also make menu navigation less sensitive. */
+    double threshold=settings_vr_deadzone/100.0;
+    threshold+=.6*(1-threshold);
+    if(fabs(x)>threshold || fabs(y)>threshold)next=fabs(x)>fabs(y)?(x>0?TOMB_RING_RIGHT:TOMB_RING_LEFT):(y>0?16:32);
     repeat-=dt;
     if(inventory_open && next && (next!=direction || repeat<=0)){inventory_input|=(unsigned)next;repeat=next!=direction?.35:.15;}
     direction=next;

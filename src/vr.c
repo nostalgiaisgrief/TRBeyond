@@ -26,6 +26,29 @@ void tomb_vr_matrix(const TombVr *v,const TombVrPose *pose,double matrix[16]){
     for(int i=0;i<3;i++){double basis[3]={0},p[3],r[3];basis[i]=1;rotate(pose->q,basis,p);world_vector(v,p,r);for(int j=0;j<3;j++)matrix[4*i+j]=r[j];}
     tomb_vr_point(v,pose->p,matrix+12);
 }
+static void item_offset_reset(TombVrHand *hand){
+    memset(hand->item_offset,0,sizeof hand->item_offset);
+    for(int i=0;i<4;i++)hand->item_offset[5*i]=1;
+}
+void tomb_vr_item_matrix(const TombVr *v,int h,double matrix[16]){
+    double hand[16];tomb_vr_matrix(v,&v->input.hand[h],hand);
+    const double *offset=v->hands[h].item_offset;
+    for(int col=0;col<4;col++)for(int row=0;row<4;row++){
+        matrix[col*4+row]=0;
+        for(int k=0;k<4;k++)matrix[col*4+row]+=hand[k*4+row]*offset[col*4+k];
+    }
+}
+void tomb_vr_pickup_motion(const TombVr *v,int h,double matrix[16]){
+    double current[16];tomb_vr_item_matrix(v,h,current);
+    const double *start=v->hands[h].pickup_grip;
+    memset(matrix,0,16*sizeof *matrix);matrix[15]=1;
+    for(int row=0;row<3;row++){
+        for(int col=0;col<3;col++)
+            for(int k=0;k<3;k++)matrix[col*4+row]+=current[k*4+row]*start[k*4+col];
+        matrix[12+row]=current[12+row];
+        for(int col=0;col<3;col++)matrix[12+row]-=matrix[col*4+row]*start[12+col];
+    }
+}
 void tomb_vr_hand_matrix(const TombVr *v,int h,double matrix[16]){
     /* The PHD wrist points along +Y, with the barrel top along +Z.
        Aim -Z is the pointing ray; grip supplies the palm position. Use the
@@ -87,7 +110,7 @@ void tomb_vr_weapon_matrix(const TombVr *v,int h,const TombMeshView *mesh,double
 }
 void tomb_vr_reset(TombVr *v,const TombPlaytest *p){
     memset(v,0,sizeof *v);v->yaw=p->lara.actor.yaw*(2*PI/65536);v->feet[0]=p->lara.actor.x;v->feet[1]=p->lara.actor.y;v->feet[2]=p->lara.actor.z;v->level_room=p->lara.actor.room;
-    for(int h=0;h<2;h++)v->hands[h].pickup=v->hands[h].hover=v->hands[h].lever=-1;
+    for(int h=0;h<2;h++){v->hands[h].pickup=v->hands[h].hover=v->hands[h].lever=-1;item_offset_reset(v->hands+h);}
     v->deadzone=.18;v->selected_key=-1;v->align_heading=1;
     v->block.item=-1;
 }
@@ -151,12 +174,14 @@ static int heights(TombPlaytest *p,double x,double y,double z,int room,TombHeigh
     }
     return 1;
 }
-static double body_offset(const TombVr *v){return v->climb_offset<0?v->climb_offset:v->swimming?200-v->input.head.p[1]*TOMB_VR_SCALE:0;}
+/* Swimming clearance: 100 units above the eyes, 300 below. Keep the same
+   400-unit total height, shifted down from the former symmetric head box. */
+static double body_offset(const TombVr *v){return v->climb_offset<0?v->climb_offset:v->swimming?300-v->input.head.p[1]*TOMB_VR_SCALE:0;}
 static int body_clear(TombVr *v,TombPlaytest *p,const double origin[3],int step){
     double pos[3]={origin[0],origin[1]+body_offset(v),origin[2]};
     if(v->swimming && !v->climb_offset && !p->swim_override && origin[1]<v->feet[1]){
         int water=tomb_water_height(p->level,(int)pos[0],(int)pos[2],v->level_room);
-        if(water!=-32512 && pos[1]<water+50)return 0;
+        if(water!=-32512 && origin[1]-v->input.head.p[1]*TOMB_VR_SCALE+200<water+50)return 0;
     }
     double standing=fmax(240,fmin(760,v->input.head.p[1]*TOMB_VR_SCALE));
     double body=v->climb_offset<0?standing+(240-standing)*fmin(1,-v->climb_offset/fmax(1,v->input.head.p[1]*TOMB_VR_SCALE-200)):v->swimming?400:standing;
@@ -198,7 +223,7 @@ static void swim_recover(TombVr *v,TombPlaytest *p){
         if(body_clear(v,p,pos,0)){memcpy(v->feet,pos,sizeof pos);return;}
     }
 }
-/* Use the same radius-wide support for walking, gravity and jump eligibility.
+/* Use centre support for walking, gravity and jump eligibility.
    Query above a possible step so raised bridge callbacks return their top. */
 static int support(TombVr *v,TombPlaytest *p,const double pos[3],double *floor){
     TombHeights h;int room;
@@ -225,13 +250,19 @@ static void gravity(TombVr *v,TombPlaytest *p,double dt){
     floor-=body_offset(v);
     if(v->feet[1]>=floor-1 && v->vertical>=0){v->feet[1]=floor;v->vertical=0;v->jumped=0;return;}
     double previous=v->vertical,next=fmin(200,previous+(previous<128?180:30)*dt);
-    if(previous<0 && !v->input.primary[0] && !v->input.primary[1])next=fmin(0,previous+720*dt);
+    if(previous<0 && !v->input.primary[0] && !v->input.primary[1]){
+        /* Short jumps brake gently on release, easing back to normal gravity
+           at the apex so ascent and descent meet without a sudden stop. */
+        double rise=fmin(1,-previous/108);
+        double release_gravity=180+180*rise*rise*(3-2*rise);
+        next=previous+release_gravity*dt;
+    }
     double target=v->feet[1]+(previous+next)*15*dt;
     int land=target>=floor && next>=0;if(land)target=floor;
     double delta[3]={0,target-v->feet[1],0},old=v->feet[1];move_body(v,p,delta,0);
     if(target>old && fabs(v->feet[1]-target)>.1){
-        /* The centre can leave a ledge before the body's rim clears its wall.
-           Move the rim clear horizontally instead of treating it as support. */
+        /* Restore the previous edge-clearance behaviour along with centre
+           support; the wider-support experiment did not resolve input drift. */
         int clear=0;
         for(int radius=10;radius<=100 && !clear;radius+=10)for(int i=0;i<8 && !clear;i++){
             double angle=i*PI/4,pos[3]={v->feet[0]+cos(angle)*radius,target,v->feet[2]+sin(angle)*radius};
@@ -259,12 +290,14 @@ static int reachable(TombPlaytest *p,const double from[3],const double to[3]){
     TombCameraPoint a={(int)from[0],(int)from[1],(int)from[2],p->lara.actor.room},b={(int)to[0],(int)to[1],(int)to[2],a.room};
     tomb_shooter_world_ray(p,a,&b);double result[3]={b.x,b.y,b.z};return distance(result,to)<30;
 }
-static int hand_object(TombVr *v,TombPlaytest *p,const double hand[3]){
-    if(!p->objects)return -1;double head[3];tomb_vr_point(v,v->input.head.p,head);int best=-1;double nearest=140;
+#include "vr_pickup_contact.h"
+static int hand_object(TombVr *v,TombPlaytest *p,int hand_id,const double hand[3]){
+    if(!p->objects)return -1;double head[3];tomb_vr_point(v,v->input.head.p,head);int best=-1;double nearest=1e30;
     for(size_t i=0;i<p->objects->count;i++){
         TombObject *o=p->objects->items+i;if((o->actor.flags&6)==6 || v->hands[0].pickup==(int)i || v->hands[1].pickup==(int)i || v->hands[0].lever==(int)i || v->hands[1].lever==(int)i)continue;
         int pickup=tomb_pickup_object(o->object);if(!pickup && o->object!=55 && o->object!=56)continue;
         if(pickup && (o->actor.flags&4))continue;
+        if(pickup && !tomb_vr_pickup_contact(v,p,hand_id,o))continue;
         double point[3]={o->actor.x,o->actor.y-80,o->actor.z};
         if(!pickup){
             /* Switch origins are not their handles: the wall lever is roughly
@@ -277,6 +310,7 @@ static int hand_object(TombVr *v,TombPlaytest *p,const double hand[3]){
             point[0]=o->actor.x+c*local[0]+s*local[2];point[1]=o->actor.y+local[1];point[2]=o->actor.z-s*local[0]+c*local[2];
         }
         double d=distance(hand,point);
+        if(!pickup && d>=140)continue;
         if(d<nearest && reachable(p,head,point)){best=(int)i;nearest=d;}
     }return best;
 }
@@ -291,7 +325,8 @@ static int ledge(TombVr *v,TombPlaytest *p,const double hand[3],TombVrHand *gras
         if(!heights(p,x,hand[1]-110,z,probe_room,&high,&room) || abs(high.floor-(int)hand[1])>100)continue;
         grasp->ledge_room=room;
         if(!heights(p,hand[0]-cos(a)*90,hand[1]-110,hand[2]-sin(a)*90,v->level_room,&low,&room) || low.floor-high.floor<200)continue;
-        if(high.floor-high.ceiling<350)continue;
+        /* Grabbing an exposed lip does not require clearance to climb onto
+           it. Swept body collision separately prevents entering a low gap. */
         grasp->anchor[0]=hand[0];grasp->anchor[1]=high.floor;grasp->anchor[2]=hand[2];
         grasp->ledge_normal[0]=cos(a);grasp->ledge_normal[1]=0;grasp->ledge_normal[2]=sin(a);
         return 1;
@@ -343,6 +378,7 @@ static void release_pickup(TombVr *v,TombPlaytest *p,int h,int collect){
         /* The original routine returns zero for a NEW weapon/ammunition too;
            that return value describes ring insertion, not collection success. */
         tomb_inventory_add(&p->inventory,o->object);
+        vr_sound(v,6);
         o->actor.flags|=6;o->active=0;++p->inventory.pickups;p->inventory.last_pickup=o->object;p->inventory.pickup_ticks=75;tomb_hud_pickup(&p->hud,o->object);
     }else{
         o->actor.x=p->lara.actor.x;o->actor.z=p->lara.actor.z;o->actor.y=p->lara.actor.y;o->actor.room=p->lara.actor.room;
@@ -352,6 +388,30 @@ static void release_pickup(TombVr *v,TombPlaytest *p,int h,int collect){
     hand->pickup=-1;tomb_enemies_room_sync(p->objects);
 }
 #include "vr_interactions.h"
+/* Transfer before either hand handles release, so a simultaneous grab/release
+   cannot drop or collect the item. Preserve its world pose across the handoff. */
+static void transfer_items(TombVr *v,TombPlaytest *p){
+    for(int h=0;h<2;h++){
+        TombVrHand *to=v->hands+h,*from=v->hands+1-h;
+        if(!v->input.hand[h].valid || !v->input.hand[1-h].valid || v->input.grip[h]<=.6 || to->gripped ||
+           to->weapon || to->pickup>=0 || to->key || to->anchored || to->support || to->lever>=0 ||
+           (v->block.item>=0 && v->block.hand==h) || (from->pickup<0 && !from->key))continue;
+        if(from->pickup>=0){if(!p->objects || (size_t)from->pickup>=p->objects->count || !tomb_vr_pickup_contact(v,p,h,p->objects->items+from->pickup))continue;}
+        else if(!tomb_vr_key_contact(v,p,h,1-h))continue;
+        double old[16],next[16];tomb_vr_item_matrix(v,1-h,old);tomb_vr_matrix(v,&v->input.hand[h],next);
+        item_offset_reset(to);
+        for(int col=0;col<3;col++)for(int row=0;row<3;row++){
+            to->item_offset[col*4+row]=0;
+            for(int k=0;k<3;k++)to->item_offset[col*4+row]+=next[row*4+k]*old[col*4+k];
+        }
+        for(int row=0;row<3;row++){
+            to->item_offset[12+row]=0;
+            for(int k=0;k<3;k++)to->item_offset[12+row]+=next[row*4+k]*(old[12+k]-next[12+k]);
+        }
+        to->pickup=from->pickup;to->pickup_start=from->pickup_start;memcpy(to->pickup_grip,from->pickup_grip,sizeof to->pickup_grip);
+        to->key=from->key;to->gripped=1;from->pickup=-1;from->key=0;from->hover=-1;
+    }
+}
 void tomb_vr_frame(TombVr *v,TombPlaytest *p,const TombVrInput *input,double dt,int paused){
     if(dt<=0 || dt>.1)dt=1.0/90;
     v->input=*input;v->menu_request=0;
@@ -418,6 +478,7 @@ void tomb_vr_frame(TombVr *v,TombPlaytest *p,const TombVrInput *input,double dt,
         }
     }
     int both=tomb_vr_zone(input,0)==3 && tomb_vr_zone(input,1)==3;
+    transfer_items(v,p);
     if(!v->menu_open)block_gesture(v,p);
     double pull[3]={0};int anchors=0;
     for(int h=0;h<2;h++){
@@ -427,15 +488,19 @@ void tomb_vr_frame(TombVr *v,TombPlaytest *p,const TombVrInput *input,double dt,
         double world[3];tomb_vr_point(v,input->hand[h].p,world);
         if(!valid || (!grip && hand->gripped)){if(hand->weapon)vr_sound(v,7);hand->weapon=0;hand->support=0;hand->anchored=0;release_pickup(v,p,h,valid && tomb_vr_zone(input,h)==3);}
         if(hand->key && (!valid || !grip))vr_key_release(v,p,h,world);
-        if(h==1 && pressed && v->selected_key>=0 && !hand->weapon){int slot=tomb_quest_slot(v->selected_key);if(slot>=0 && p->inventory.quest[slot])hand->key=v->selected_key;v->selected_key=-1;}
+        if(h==1 && pressed && v->selected_key>=0 && !hand->weapon && hand->pickup<0){int slot=tomb_quest_slot(v->selected_key);if(slot>=0 && p->inventory.quest[slot]){hand->key=v->selected_key;item_offset_reset(hand);}v->selected_key=-1;}
         if(hand->lever>=0){vr_lever_move(v,p,h,valid && grip,world[1],dt);hand->gripped=grip;memcpy(hand->previous,input->hand[h].p,sizeof hand->previous);continue;}
         if(hand->key){hand->gripped=grip;memcpy(hand->previous,input->hand[h].p,sizeof hand->previous);continue;}
         int supporting=valid && grip && shotgun_support(v,h,pressed);
-        hand->hover=valid && !hand->weapon && hand->pickup<0 && !hand->anchored?hand_object(v,p,world):-1;
+        hand->hover=valid && !hand->weapon && hand->pickup<0 && !hand->anchored?hand_object(v,p,h,world):-1;
         if(pressed && !supporting && !(v->block.item>=0 && v->block.hand==h)){
             if(hand->hover>=0){
                 TombObject *o=p->objects->items+hand->hover;
-                if(tomb_pickup_object(o->object))hand->pickup=hand->hover;
+                if(tomb_pickup_object(o->object)){
+                    hand->pickup=hand->hover;hand->pickup_start=o->actor;
+                    item_offset_reset(hand);
+                    tomb_vr_matrix(v,&input->hand[h],hand->pickup_grip);
+                }
                 else if(!(o->actor.flags&6) && (o->actor.current==0 || o->actor.current==1))vr_lever_begin(hand,p,hand->hover,world[1]);
             }else if(ledge(v,p,world,hand)){hand->anchored=1;v->climb_offset=fmin(0,200-input->head.p[1]*TOMB_VR_SCALE);v->vertical=0;}
             else if(surface_grip(v,p,world,hand)){hand->anchored=2;v->climb_offset=fmin(0,200-input->head.p[1]*TOMB_VR_SCALE);v->vertical=0;}
@@ -449,7 +514,12 @@ void tomb_vr_frame(TombVr *v,TombPlaytest *p,const TombVrInput *input,double dt,
         if(hand->anchored && valid){
             for(int j=0;j<3;j++)pull[j]+=hand->anchor[j]-world[j];anchors++;
         }
-        if(hand->pickup>=0 && p->objects){TombObject *o=p->objects->items+hand->pickup;o->actor.x=(int)world[0];o->actor.y=(int)world[1]+80;o->actor.z=(int)world[2];o->actor.room=p->lara.actor.room;}
+        if(hand->pickup>=0 && p->objects){
+            TombObject *o=p->objects->items+hand->pickup;double motion[16],point[3];
+            tomb_vr_pickup_motion(v,h,motion);
+            for(int j=0;j<3;j++)point[j]=motion[j]*hand->pickup_start.x+motion[4+j]*hand->pickup_start.y+motion[8+j]*hand->pickup_start.z+motion[12+j];
+            o->actor.x=(int)point[0];o->actor.y=(int)point[1];o->actor.z=(int)point[2];o->actor.room=p->lara.actor.room;
+        }
         if(v->swimming && valid && !fresh && !hand->weapon && !hand->anchored && hand->pickup<0 && !hand->support)swim_stroke(v,h,dt);
         memcpy(hand->previous,input->hand[h].p,sizeof hand->previous);
         int trigger=valid && input->aim[h].valid && input->trigger[h]>(hand->triggered?.35:.6);

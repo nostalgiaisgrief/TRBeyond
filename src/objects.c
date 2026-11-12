@@ -347,7 +347,23 @@ void tomb_objects_camera_begin(TombObjects *w) {
     if(w->camera.active==5 && w->camera.timer!=-1)return;
     w->last_target=w->camera.target;w->camera.last=w->camera.index;w->camera.index=-1;w->camera.target=-1;w->camera.active=0;
 }
-static int trigger(TombObjects *w,size_t index,int grounded,int heavy,int weapon,int camera_mode,int activated) {
+/* Adjacent switch sectors may repeat targets. Physical VR interaction visits
+   all of them at once; an identical action must still run only once per pull. */
+static int trigger_seen(const TombLevel *l,const size_t *history,size_t count,unsigned type,uint16_t flags,unsigned word,unsigned extra){
+    for(size_t n=0;n<count;n++){
+        size_t at=history[n];if(at+2>=l->floor_count)continue;
+        if(((l->floor_data[at]>>8)&63)!=type || l->floor_data[at+1]!=flags)continue;
+        at+=3;
+        while(at<l->floor_count){
+            unsigned old=l->floor_data[at++],end=old,action=(old&0x3fff)>>10,payload=0;
+            if(action==1){if(at>=l->floor_count)break;payload=end=l->floor_data[at++];}
+            if((old&0x7fff)==(word&0x7fff) && (action!=1 || (payload&0x7fff)==(extra&0x7fff)))return 1;
+            if(end&0x8000)break;
+        }
+    }
+    return 0;
+}
+static int trigger_group_member(TombObjects *w,size_t index,int grounded,int heavy,int weapon,int camera_mode,int activated,const size_t *history,size_t history_count) {
     int interrupt=w->camera.active!=5 && (camera_mode==2 || camera_mode==3);
     if(!index)return 1;
     const TombLevel *l=w->level;
@@ -408,6 +424,11 @@ static int trigger(TombObjects *w,size_t index,int grounded,int heavy,int weapon
     at=first;
     while(at<l->floor_count) {
         unsigned word=l->floor_data[at++],action=(word&0x3fff)>>10,id=word&1023;
+        if(trigger_seen(l,history,history_count,type,flags,word,action==1?l->floor_data[at]:0)){
+            if(action==1)word=l->floor_data[at++];
+            if(word&0x8000)break;
+            continue;
+        }
         if(action==0 && tomb_object_supported(w->items[id].object) && !tomb_enemy_object(w->items[id].object))tomb_object_trigger(w->items+id,(int)type,flags);
         else if(action==0 && tomb_enemy_object(w->items[id].object))tomb_enemies_trigger(w,id,(int)type,flags);
         else if(action==1) {
@@ -437,6 +458,14 @@ static int trigger(TombObjects *w,size_t index,int grounded,int heavy,int weapon
     return 1;
 }
 
+static int trigger(TombObjects *w,size_t index,int grounded,int heavy,int weapon,int camera_mode,int activated){
+    return trigger_group_member(w,index,grounded,heavy,weapon,camera_mode,activated,NULL,0);
+}
+int tomb_objects_trigger_group(TombObjects *w,const size_t *indices,size_t count){
+    for(size_t n=0;n<count;n++)
+        if(!trigger_group_member(w,indices[n],1,0,0,0,n!=0,indices,n))return 0;
+    return 1;
+}
 
 int tomb_objects_trigger(TombObjects *w,size_t index,int grounded){return trigger(w,index,grounded,0,1,0,0);}
 int tomb_objects_trigger_heavy(TombObjects *w,size_t index){return trigger(w,index,1,1,1,0,0);}

@@ -3,8 +3,21 @@
 #include "asset.h"
 static char install_root[MAX_PATH];
 static int custom_campaign_id;
+static int game_selector,game_intro_pending;
+static const char *game_ids[]={"TR1","TR2","TR3","TR4","TR5"};
+static const char *game_names[]={"Tomb Raider","Tomb Raider II","Tomb Raider III","Tomb Raider: The Last Revelation","Tomb Raider Chronicles"};
+static int launcher_game;
+#include "preview_layout.h"
+static void launcher_choose(unsigned available){
+ char path[MAX_PATH],last[16];snprintf(path,sizeof path,"%s/launcher.ini",install_root);
+ GetPrivateProfileStringA("Launcher","last_game","",last,sizeof last,path);
+ /* Extend this mask as each game's loader/runtime becomes available. */
+ launcher_game=0;
+ for(int i=0;i<5;i++)if((available&(1u<<i)) && !strcmp(last,game_ids[i])){launcher_game=i;return;}
+ for(int i=0;i<5;i++)if(available&(1u<<i)){launcher_game=i;return;}
+}
 static void custom_path(char *path,int id,const char *relative){
- snprintf(path,MAX_PATH,"%s/Custom/%d/%s",install_root,id,relative);
+ snprintf(path,MAX_PATH,"%s/Custom/TR1/%d/%s",install_root,id,relative);
 }
 static const char *game_level_name(int number){
  return level_choices[number].name;
@@ -22,7 +35,7 @@ static int campaign_level_at(int index){
  return index;
 }
 static int campaign_level_index(int number){for(int i=0;i<campaign_level_count();i++)if(campaign_level_at(i)==number)return i;return 0;}
-static void ub_path(char *path,const char *relative){snprintf(path,MAX_PATH,"%s/Source/UB/%s",install_root,relative);}
+static void ub_path(char *path,const char *relative){snprintf(path,MAX_PATH,"%s/Source/TR1/UB/%s",install_root,relative);}
 static int ub_available(void){
  const char *files[]={"DATA/EGYPT.TBL","DATA/CAT.TBL","DATA/END.TBL","DATA/END2.TBL","DATA/TITLEH.PCX","DATA/CRED0.PCX"};
  char path[MAX_PATH];for(size_t i=0;i<sizeof files/sizeof *files;i++){ub_path(path,files[i]);if(GetFileAttributesA(path)==INVALID_FILE_ATTRIBUTES)return 0;}return 1;
@@ -41,7 +54,7 @@ static void source_root_init(void){
 }
 static void source_base(char *path,int source){
  if(source_legacy && source==1)snprintf(path,MAX_PATH,"%s/work/reference-assets",install_root);
- else snprintf(path,MAX_PATH,"%s/Source/%s",install_root,source_dirs[source]);
+ else snprintf(path,MAX_PATH,"%s/Source/TR1/%s",install_root,source_dirs[source]);
 }
 static void source_path_for(char *path,const char *relative,int source){
  char base[MAX_PATH];source_base(base,source);
@@ -83,7 +96,7 @@ static void source_scan(void){
  source_available=0;source_legacy=0;
  for(int i=0;i<3;i++)if(source_valid(i))source_available|=1u<<i;
  if(!(source_available&2)){source_legacy=1;if(source_valid(1))source_available|=2;else source_legacy=0;}
- char path[MAX_PATH],value[32];snprintf(path,sizeof path,"%s/settings.ini",install_root);
+ char path[MAX_PATH],value[32];snprintf(path,sizeof path,"%s/Config/TR1/settings.ini",install_root);
  GetPrivateProfileStringA("Game","source","",value,sizeof value,path);
  source_selected=source_pending=source_choose(source_available,source_preference(path,"level_source",value));
  music_available=fmv_available=0;

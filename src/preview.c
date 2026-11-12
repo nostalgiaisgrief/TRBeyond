@@ -156,6 +156,7 @@ static int load_next_level(void);
 static int title_mode,options_ring,death_menu,slot_menu,slot_current,menu_action,option_row;
 static int new_game_menu,new_game_level=1;
 static int new_game_row,new_game_custom,new_game_mode,controls_page;
+static int launch_vr;
 static int new_game_custom_id;
 enum { COOP_ADDRESS_PAGE=9,COOP_WAIT_PAGE };
 static int menu_role,menu_session,setup_stage,address_selected;
@@ -278,7 +279,7 @@ static int autosave_poll(void){
  if(!ok)fprintf(stderr,"Autosave could not be written\n");
  return ok;
 }
-static void settings_path(char *path){snprintf(path,MAX_PATH,"%s/settings.ini",install_root);}
+static void settings_path(char *path){snprintf(path,MAX_PATH,"%s/Config/TR1/settings.ini",install_root);}
 static unsigned *control_bindings(void){return controls_page==2?fps_bindings:controls_page?shooter_bindings:bindings;}
 #include "preview_gamepad.h"
 #include "preview_settings.h"
@@ -362,33 +363,40 @@ static void audio_stop(void) {
     ps1_music=(TombPS1Music){0};audio_paused=0;combined_background=0;combined_background_gain=0;
 }
 static void audio_start_track(int track,int gain) {
-    audio_close_stream();playing_track=track;
+    unsigned char *next_data=NULL;TombSoundSample next_sample={0};int loop=0,ready=0;
+    playing_track=track;audio_error[0]=0;
     int source_selection=combined_background?1:music_source();
         if(track) {
-            int source=source_selection==0?(track>=2 && track<=57?track:0):tomb_music_source(track),ready=0;
+            int source=source_selection==0?(track>=2 && track<=57?track:0):tomb_music_source(track);
+            loop=source_selection==0?title_mode:source>0;
             /* DOS 38cf7 requests sound ID track+148 from the current level. */
             if(source==-3){
                 TombSoundBank *bank=speech_samples();
                 int detail=bank->map[track+148];
                 if(bank->details && detail>=0 && (size_t)detail<bank->detail_count){
                     unsigned sample=bank->details[detail].sample;
-                    if(sample<bank->sample_count){music_sample=bank->samples[sample];ready=1;}
+                    if(sample<bank->sample_count){next_sample=bank->samples[sample];ready=1;}
                 }
             }else{
                 char file[MAX_PATH],relative[80];
                 snprintf(relative,sizeof relative,"AUDIO/%s%02d.wav",source>0?"cd":"track",source>0?source:track);source_path_for(file,relative,source_selection);
                 FILE *f=fopen(file,"rb");long bytes=0;
-                if(f){if(!fseek(f,0,SEEK_END))bytes=ftell(f);rewind(f);if(bytes>0 && bytes<100000000)music_data=malloc((size_t)bytes);if(music_data && fread(music_data,1,(size_t)bytes,f)!=(size_t)bytes){free(music_data);music_data=NULL;}fclose(f);}
-                ready=music_data && tomb_sound_sample(&music_sample,music_data,(size_t)bytes);
+                if(f){if(!fseek(f,0,SEEK_END))bytes=ftell(f);rewind(f);if(bytes>0 && bytes<100000000)next_data=malloc((size_t)bytes);if(next_data && fread(next_data,1,(size_t)bytes,f)!=(size_t)bytes){free(next_data);next_data=NULL;}fclose(f);}
+                ready=next_data && tomb_sound_sample(&next_sample,next_data,(size_t)bytes);
             }
-            if(ready){
-                memset(&music_bank,0,sizeof music_bank);music_bank.samples=&music_sample;music_bank.sample_count=1;tomb_sound_init(&music_mixer,&music_bank);
-                music_mixer.voices[0]=(TombSoundVoice){.active=1,.volume=32767,.pitch=100,.mode=source_selection==0?(title_mode?2:0):(source>0?2:0)};music_output=tomb_sound_output_open_gain(&music_mixer,gain);
-            }
-            if(!music_output)snprintf(audio_error,sizeof audio_error,"Music track %d unavailable",track);
         }
+    if(!ready)next_sample=(TombSoundSample){0};
+    if(!music_output){
+        memset(&music_bank,0,sizeof music_bank);tomb_sound_init(&music_mixer,&music_bank);
+        music_output=tomb_sound_output_open_gain(&music_mixer,0);
+    }
+    if(music_output)tomb_sound_output_track(music_output,&music_bank,&music_sample,&next_sample,loop,gain,settings_music);
+    else music_sample=(TombSoundSample){0};
+    free(music_data);music_data=next_data;
+    if(track && (!ready || !music_output))snprintf(audio_error,sizeof audio_error,"Music track %d unavailable",track);
 }
 static void audio_update(int suspended,double dt) {
+    if(game_selector)return;
     int track=title_mode?2:caves?objects.progress->music.current_track:play.gym.current_track;
     unsigned serial=title_mode?0:caves?objects.progress->music.audio_serial:play.gym.audio_serial;
     if(music_selected==3 && !title_mode){
@@ -400,8 +408,8 @@ static void audio_update(int suspended,double dt) {
             /* A trigger starts immediately: no PS1 fade-out wait. */
             audio_start_track(track,32767);
         }
-        int finished=!music_output || (!combined_background && music_sample.rate &&
-            (uint64_t)tomb_sound_output_stats(music_output).played_samples*music_sample.rate >=
+        int finished=!music_output || !music_sample.rate || (!combined_background &&
+            (uint64_t)tomb_sound_output_track_samples(music_output)*music_sample.rate >=
             (uint64_t)music_sample.frames*TOMB_SOUND_RATE);
         if(finished && !combined_background){
             combined_background=1;combined_background_gain=0;
@@ -416,7 +424,7 @@ static void audio_update(int suspended,double dt) {
         /* Use the device playback position, not the mixer position (which is
            several buffers ahead), to recognize a completed one-shot. */
         if(!title_mode && ps1_music.active && music_output && music_sample.rate &&
-           (uint64_t)tomb_sound_output_stats(music_output).played_samples*music_sample.rate >=
+           (uint64_t)tomb_sound_output_track_samples(music_output)*music_sample.rate >=
            (uint64_t)music_sample.frames*TOMB_SOUND_RATE)tomb_ps1_music_finished(&ps1_music);
         if(track!=requested_music_track || serial!=playing_music_serial){
             tomb_ps1_music_request(&ps1_music,track);
@@ -1056,6 +1064,18 @@ static int draw_object(const TombObject *o) {
 /* Inventory models use their resting pose at native world scale. Centre their
    footprint on the pickup and put the bottom above its authored support. */
 static int draw_pickup_model(const TombObject *o,int16_t visual_yaw){
+    if(play.shooter.mode==TOMB_MODE_VR && vr.ready){
+        TombVrPickupPose pickup;if(!tomb_vr_pickup_pose(&vr,&play,o,visual_yaw,&pickup))return 0;
+        TombPose light=pickup.pose;float cx=(light.bounds[0]+light.bounds[1])*.5f,cz=(light.bounds[4]+light.bounds[5])*.5f,bottom=light.bounds[3];
+        for(int i=0;i<6;i++)light.bounds[i]=(int16_t)(light.bounds[i]-(i<2?cx:i<4?bottom:cz));
+        actor_lighting(&pickup.light_actor,&light,-1,0,0);
+        int held=0;for(int h=0;h<2;h++)if(vr.hands[h].pickup>=0 && (size_t)vr.hands[h].pickup<objects.count && o==objects.items+vr.hands[h].pickup)held=1;
+        for(unsigned i=0;i<pickup.model.mesh_count;i++){
+            if(held)pickup.matrix[i][13]+=vr.view_offset;
+            glPushMatrix();glMultMatrixd(pickup.matrix[i]);mesh(visual->meshes+pickup.model.mesh_start+i);glPopMatrix();
+        }
+        return 1;
+    }
     int id=tomb_pickup_model(o->object);TombModel model;TombPose pose;
     if(id<0 || !tomb_visual_model(visual,(unsigned)id,&model) || !model.mesh_count || model.mesh_count>64 ||
        !tomb_visual_key(visual,model.animation,0,&pose) || pose.count!=model.mesh_count)return 0;
@@ -1066,10 +1086,12 @@ static int draw_pickup_model(const TombObject *o,int16_t visual_yaw){
         int i=vr.hands[h].pickup;
         if(i>=0 && (size_t)i<objects.count && o==objects.items+i && vr.input.hand[h].valid)held=h;
     }
+    TombObject resting;
+    if(held>=0){resting=*o;resting.actor=vr.hands[held].pickup_start;o=&resting;support=(float)o->actor.y;}
     /* A nearby slope may rise through the footprint. Use its highest corner,
        but never move floating/held pickups down to a remote floor. */
     TombSectorRef ref;TombHeights floor;
-    if(held<0 && tomb_find_sector(level,o->actor.x,o->actor.y,o->actor.z,o->actor.room,&ref) &&
+    if(tomb_find_sector(level,o->actor.x,o->actor.y,o->actor.z,o->actor.room,&ref) &&
        tomb_static_heights(level,ref,o->actor.x,o->actor.z,0,&floor) && abs(floor.floor-o->actor.y)<32){
         for(int x=0;x<2;x++)for(int z=0;z<2;z++){
             int32_t local[3]={(int32_t)(pose.bounds[x]-cx),0,(int32_t)(pose.bounds[4+z]-cz)},point[3];
@@ -1081,12 +1103,10 @@ static int draw_pickup_model(const TombObject *o,int16_t visual_yaw){
     }
     glPushMatrix();
     if(held>=0){
-        double grip[16];tomb_vr_matrix(&vr,&vr.input.hand[held],grip);grip[13]+=vr.view_offset;
-        glMultMatrixd(grip);glRotated(180,1,0,0);
-        /* Centre the held model on the palm. Every mesh shares this full
-           controller transform, including wrist roll and pitch. */
-        bottom=(pose.bounds[2]+pose.bounds[3])*.5f;
-    }else{glTranslatef((float)o->actor.x,support-2,(float)o->actor.z);glRotatef(visual_yaw*(360.f/65536.f),0,1,0);}
+        double motion[16];tomb_vr_pickup_motion(&vr,held,motion);motion[13]+=vr.view_offset;
+        glMultMatrixd(motion);
+    }
+    glTranslatef((float)o->actor.x,support-2,(float)o->actor.z);glRotatef(visual_yaw*(360.f/65536.f),0,1,0);
     TombPose light_pose=pose;for(int i=0;i<6;i++)light_pose.bounds[i]=(int16_t)(pose.bounds[i]-(i<2?cx:i<4?bottom:cz));
     TombActor light_actor=o->actor;light_actor.y=(int32_t)support-2;light_actor.yaw=visual_yaw;
     /* Sprite intensity is not a model shade. Room lighting initializes all
@@ -1377,16 +1397,22 @@ static void font_glyph(void *user,const TombTextGlyph *g) {
     glTexCoord2f(u,v);glVertex2f(x0,y0);glTexCoord2f(u+du,v);glVertex2f(x1,y0);
     glTexCoord2f(u+du,v+dv);glVertex2f(x1,y1);glTexCoord2f(u,v+dv);glVertex2f(x0,y1);glEnd();
 }
-static void text_aligned(float x,float y,const char *text,unsigned flags) {
+static void text_aligned_tinted(float x,float y,const char *text,unsigned flags,float brightness) {
     double scale=ui_scale();
     TombTextStyle style={(int)x,(int)y,(int32_t)(scale*65536),(int32_t)(scale*65536),1,6,(uint16_t)flags};
-    glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glColor3f(1,1,1);
+    glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glColor3f(brightness,brightness,brightness);
     tomb_text_layout(text,&style,width,height,font_glyph,NULL);
     glDisable(GL_ALPHA_TEST);glDisable(GL_TEXTURE_2D);
 }
+static void text_aligned(float x,float y,const char *text,unsigned flags){text_aligned_tinted(x,y,text,flags,1);}
 #include "ui_dialog.h"
 #include "preview_frontend.h"
 static void inventory_tick(unsigned input) {
+    if(game_selector){
+        if(input&TOMB_RING_BACK){running=0;return;}
+        if(input&TOMB_RING_SELECT){game_intro_pending=1;inventory_input=0;}
+        return;
+    }
     ring_previous=inventory_ring;compass_previous=compass_angle;
     if(inventory_ring.motion.status==2 && inventory_ring.motion.target==13){if(backdrop_shade>32)--backdrop_shade;}else if(backdrop_shade<48)++backdrop_shade;
     if(coop_connected && objects.pickup_claims){
@@ -1541,8 +1567,12 @@ static void overlay(void) {
     int medipack=0;
     if(inventory_open || complete) {
         if(overlay_pass!=2 && !title_mode && !vr_hand_ring())frontend_inventory_backdrop();
-        if(overlay_pass!=2 && title_mode)frontend_backdrop();
-        if(complete) {
+        if(overlay_pass!=2 && title_mode){
+            if(game_selector){glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);}
+            else frontend_backdrop();
+        }
+        if(game_selector){if(overlay_pass!=1)frontend_game_selector();}
+        else if(complete) {
             char lines[4][80];tomb_statistics(play.inventory.ticks,play.pistols.kills,play.inventory.pickups,objects.progress->secrets,tomb_level_secret_total(level_number),lines);
             if(overlay_pass!=1){ui_text(0,-50,game_level_name(level_number),TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
             for(int i=0;i<4;i++)ui_text(0,-20+30*i,lines[i],TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);}
@@ -1557,7 +1587,7 @@ static void overlay(void) {
             }
         }
     }
-    if(overlay_pass!=1 && inventory_open)frontend_overlay();
+    if(overlay_pass!=1 && inventory_open && !game_selector)frontend_overlay();
     if(overlay_pass!=1 && !title_mode && !complete && (!inventory_open || medipack)) {
         glDisable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);
         TombPlaytest *subject=coop_connected && objects.pickup_claims && play.lara.health<=0 && partner.lara.health>0?&partner:&play;
@@ -2075,9 +2105,11 @@ int main(int argc,char **argv) {
     char path[MAX_PATH],error[256]; const char *shot=NULL,*trace=NULL; double shot_time=0; int interest_test=0,quest_ui_test=0, simulate=0, ledge_test=0, fast_fall_test=0, jump_test=0, standing_test=0, grab_test=0, climb_test=0, window_input_test=0, pool_test=0, forward_test=0, vault_test=0,gym_test=0,render_test=0,slide_test=0,switch_test=0,hazard_test=0; uint32_t scripted_input=0;
     const char *coop_address=NULL;int wolf_encounter=0;
     title_mode=argc==1;if(title_mode)caves=1;
-    source_root_init();source_scan();asset_path(path,"GYM.PHD");
+    source_root_init();if(!layout_prepare()){MessageBoxA(NULL,"Could not migrate the installation folders. Check for conflicting old and new folders or files in use. No existing destination was overwritten.","Tomb Raider Beyond",MB_OK|MB_ICONERROR);return 1;}source_scan();
+    if(!source_available){MessageBoxA(NULL,"No supported game data was found. Run the installer to import an owned copy of Tomb Raider.","Tomb Raider Beyond",MB_OK|MB_ICONINFORMATION);return 1;}asset_path(path,"GYM.PHD");
     for(int i=1;i<argc;i++) {
         if(!strcmp(argv[i],"--title")){title_mode=1;caves=1;}
+        else if(!strcmp(argv[i],"--vr")){launch_vr=1;title_mode=1;caves=1;}
         else if(!strcmp(argv[i],"--autosave-switch-test")){autosave_switch_test=front_test=caves=1;}
         else if(!strcmp(argv[i],"--frontend-test")){front_test=1;caves=1;}
         else if(!strcmp(argv[i],"--gamepad-test")){front_test=1;caves=1;}
@@ -2318,20 +2350,24 @@ int main(int argc,char **argv) {
                 passed=passed && *values[i]==next;SendMessageA(window,WM_KEYUP,keys[i],0);
             }
             snprintf(install_root,sizeof install_root,"work/audio-fixture");source_legacy=0;
+            int controls_passed=passed;passed=1;
             music_selected=3;title_mode=0;caves=1;level_number=16;
             audio_stop();objects.progress->music.current_track=0;objects.progress->music.audio_serial=0;
             audio_update(0,.25);passed=passed && music_output && combined_background && playing_track==59 && combined_background_gain==.25;
+            TombSoundOutput *persistent_output=music_output;
             audio_update(1,.5);passed=passed && combined_background_gain==.25;
             objects.progress->music.current_track=13;++objects.progress->music.audio_serial;
             audio_update(0,.01);passed=passed && music_output && !combined_background && playing_track==13;
             objects.progress->music.current_track=14;++objects.progress->music.audio_serial;
             audio_update(0,.01);passed=passed && music_output && !combined_background && playing_track==14;
-            music_sample.frames=0;audio_update(0,.1);
+            passed=passed && music_output==persistent_output;
+            TombSoundSample ended=music_sample;ended.frames=0;
+            tomb_sound_output_track(music_output,&music_bank,&music_sample,&ended,0,32767,settings_music);audio_update(0,.1);
             passed=passed && music_output && combined_background && playing_track==59 && combined_background_gain==.1;
             audio_update(0,2);passed=passed && combined_background_gain==1;
             audio_stop();title_mode=1;audio_update(0,.2);
             passed=passed && music_output && !combined_background && playing_track==2;
-            audio_stop();fprintf(stderr,"Combined audio and detail shortcuts: %s\n",passed?"PASS":"FAIL");
+            audio_stop();fprintf(stderr,"Combined audio: %s; detail shortcuts: %s\n",passed?"PASS":"FAIL",controls_passed?"PASS":"FAIL");passed=passed && controls_passed;
             DestroyWindow(window);tomb_visual_free(visual);tomb_level_free(level);return passed?0:2;
         }
         if(window_input_test==4){
@@ -2586,7 +2622,7 @@ int main(int argc,char **argv) {
     if(front_test)return frontend_check()?0:2;
 #endif
     if(title_mode)frontend_title();
-    if(front_capture){
+    if(front_capture && front_capture!=8){
         for(int t=0;t<32;t++)inventory_tick(0);
         if(front_capture>=3 && front_capture<=5){int object=front_capture==3?95:front_capture==4?96:97;while(inventory_ring.items[inventory_ring.current].object!=object){inventory_tick(TOMB_RING_RIGHT);for(int t=0;t<32;t++)inventory_tick(0);}}
         if(front_capture>1){inventory_tick(TOMB_RING_SELECT);for(int t=0;t<90;t++)inventory_tick(0);}
@@ -2601,6 +2637,7 @@ int main(int argc,char **argv) {
             inventory_tick(TOMB_RING_SELECT);slot_current=15;
         }
     }
+    if(front_capture==8){launcher_choose(source_available?1u:0u);game_selector=1;}
     if(transition_test) {
         int expected_level=level_number+1;
         if(level_number==2 || level_number==3){finish_start();if(!tomb_playtest_tick(&play,0) || !objects.progress->complete)return 2;}
@@ -2632,7 +2669,11 @@ int main(int argc,char **argv) {
     SetTimer(window,1,500,NULL);
     if(cutscene_only)return play_cutscene(0)?0:2;
     if(movie_only)return play_movie(movie_only,0)?0:2;
-    if(title_mode && !shot && !front_test){play_movie("CORE",0);if(running)play_movie("ESCAPE",0);if(running)play_movie("CAFE",0);}
+    if(launch_vr && !xr_open()){
+        MessageBoxA(window,xr.error,"Virtual Reality unavailable",MB_OK|MB_ICONWARNING);
+        launch_vr=0;
+    }
+    if(title_mode && !shot && !front_test && !front_capture){launcher_choose(source_available?1u:0u);game_selector=1;audio_stop();}
     if(jaw_diagnostic){
         if(!load_game_level(7,0,NULL) || !tomb_save_read("dist/caves-playtest-92/saves/slot02.tsv",7,&play,&objects,&camera,&level_inventory))return 2;
         play.lara.health=play.water.health=play.movement.health=1000;
@@ -2662,6 +2703,13 @@ int main(int argc,char **argv) {
         display_size(window);
         if(menu_session && !coop_mode)menu_coop_poll(window);
         if(!menu_session && !coop_mode)autosave_poll();
+        if(game_intro_pending){
+            game_intro_pending=0;char launcher[MAX_PATH];snprintf(launcher,sizeof launcher,"%s/launcher.ini",install_root);
+            WritePrivateProfileStringA("Launcher","last_game",game_ids[launcher_game],launcher);
+            play_movie("CORE",0);if(running)play_movie("ESCAPE",0);if(running)play_movie("CAFE",0);
+            game_selector=0;memset(held_keys,0,sizeof held_keys);inventory_input=0;frontend_title();
+            QueryPerformanceCounter(&last);
+        }
         MSG msg;
         while(PeekMessage(&msg,NULL,0,0,PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
         QueryPerformanceCounter(&now); double dt=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart; last=now;
@@ -2679,7 +2727,7 @@ int main(int argc,char **argv) {
             int hold=paused || inventory_pauses() || title_mode || objects.progress->complete || xr.state!=XR_SESSION_STATE_FOCUSED;
             int old_hover[2]={vr.hands[0].hover,vr.hands[1].hover};
             vr.deadzone=settings_vr_deadzone/100.0;
-            tomb_vr_frame(&vr,&play,&vr_input,dt,hold);
+            vr.gym_hands=!caves;tomb_vr_frame(&vr,&play,&vr_input,dt,hold);
             for(int h=0;h<2;h++)if(vr.hands[h].hover>=0 && vr.hands[h].hover!=old_hover[h])xr_feedback(h,.25f);
             if(vr.menu_request && !inventory_open)inventory_begin();
         }

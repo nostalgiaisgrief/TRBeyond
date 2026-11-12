@@ -106,10 +106,10 @@ def import_archive(archive, stage, log):
 
 
 def run(root, entry, file_id, uninstall=False):
-    base = root/'Custom'/str(entry)
+    base = root/'Custom'/'TR1'/str(entry)
     if uninstall:
         # Windows cannot delete import.log while this process has it open.
-        if not isinstance(entry, int) or entry <= 0 or base.resolve() != root.resolve()/'Custom'/str(entry):
+        if not isinstance(entry, int) or entry <= 0 or base.resolve() != root.resolve()/'Custom'/'TR1'/str(entry):
             raise ValueError('Invalid custom entry directory')
         try:
             if base.exists():

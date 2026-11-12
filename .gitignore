@@ -24,6 +24,7 @@
 # Installer and original-game asset import.
 !/tools/setup_wizard.py
 !/tools/setup_import.py
+!/tools/install_layout.py
 !/tools/convert_assets.py
 !/tools/convert_ps1.py
 !/tools/import_ps1.py

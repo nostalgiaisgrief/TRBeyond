@@ -35,14 +35,14 @@ static void custom_poll_task(void){
     DWORD result=1;GetExitCodeProcess(custom_task,&result);
     CloseHandle(custom_task);custom_task=NULL;
     custom_status_id=custom_task_id;custom_refresh_installed();custom_remove=0;
-    if(result)snprintf(custom_status,sizeof custom_status,"Failed - see Custom/%d/import.log",custom_task_id);
+    if(result)snprintf(custom_status,sizeof custom_status,"Failed - see Custom/TR1/%d/import.log",custom_task_id);
     else custom_status[0]=0;
 }
 static void custom_install_task(const cJSON *entry,int remove){
     if(custom_task)return;
     int id=custom_id(entry),file=custom_id(catalog_field(entry,"last_file"));
     char path[MAX_PATH],cmd[160],folder[MAX_PATH];
-    snprintf(folder,sizeof folder,"%s/Custom",install_root);CreateDirectoryA(folder,NULL);
+    snprintf(folder,sizeof folder,"%s/Custom/TR1",install_root);CreateDirectoryA(folder,NULL);
     custom_path(folder,id,"");CreateDirectoryA(folder,NULL);
     custom_status_id=id;
     const char *failure="No downloadable release file in catalogue";
@@ -60,7 +60,7 @@ static void custom_install_task(const cJSON *entry,int remove){
         failure="Could not launch TRCustomImport.exe";
     }
     custom_log_error(id,failure);
-    snprintf(custom_status,sizeof custom_status,"Failed - see Custom/%d/import.log",id);
+    snprintf(custom_status,sizeof custom_status,"Failed - see Custom/TR1/%d/import.log",id);
 }
 static void custom_fetch(int page){
     if(custom_query.thread && !catalog_finished(&custom_query))return;

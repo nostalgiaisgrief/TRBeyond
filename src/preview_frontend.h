@@ -280,11 +280,11 @@ static int frontend_input(unsigned *input){
    if((*input&32) && new_game_row<3 && (campaign_for_load || menu_role!=2))++new_game_row;
    if(new_game_row==-1 && (*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))){
     menu_role=(menu_role+((*input&TOMB_RING_LEFT)?2:1))%3;
-    new_game_mode=0;new_game_options=0;new_game_custom=0;new_game_custom_id=0;menu_error[0]=0;
+    new_game_mode=launch_vr?TOMB_MODE_VR:0;new_game_options=0;new_game_custom=0;new_game_custom_id=0;menu_error[0]=0;
    }
    if(*input&TOMB_RING_BACK){new_game_menu=0;new_game_row=0;campaign_for_load=0;menu_error[0]=0;}
    else if((*input&TOMB_RING_SELECT) && new_game_row<0){
-    if(menu_role==2){new_game_menu=1;new_game_mode=new_game_row=0;new_game_custom_id=0;}
+    if(menu_role==2){new_game_menu=1;new_game_mode=new_game_row=launch_vr?TOMB_MODE_VR:0;new_game_custom_id=0;}
     else new_game_row=0;
    }
    else if((*input&TOMB_RING_SELECT) && new_game_row==3 && !campaign_for_load){
@@ -326,7 +326,7 @@ static int frontend_input(unsigned *input){
   else if(*input&TOMB_RING_SELECT){
    if(page==0 && title_mode){menu_role=0;campaign_for_load=1;new_game_menu=4;new_game_row=CAMPAIGN_TR;}
    else if(page==0 || (page==1 && !title_mode && (level_number!=0 || passport_save))){frontend_open_slots(page);}
-   else if(page==1 && (title_mode || (level_number==0 && !passport_save))){menu_role=0;campaign_for_load=0;new_game_menu=4;new_game_row=CAMPAIGN_TR;new_game_options=0;new_game_custom=0;new_game_custom_id=0;new_game_mode=0;new_game_level=1;menu_error[0]=0;}
+   else if(page==1 && (title_mode || (level_number==0 && !passport_save))){menu_role=0;campaign_for_load=0;new_game_menu=4;new_game_row=CAMPAIGN_TR;new_game_options=0;new_game_custom=0;new_game_custom_id=0;new_game_mode=launch_vr?TOMB_MODE_VR:0;new_game_level=1;menu_error[0]=0;}
    else{menu_action=page+1;tomb_ring_finish_item(r,71);}*input=0;
   }
  }else if(i->object==73 && !title_mode){
@@ -498,6 +498,26 @@ static void frontend_key_name(unsigned key,char out[40]) {
  if(key>=VK_NUMPAD0 && key<=VK_NUMPAD9){snprintf(out,40,"PAD%u",key-VK_NUMPAD0);return;}
  LONG scan=(LONG)(MapVirtualKeyA(key,MAPVK_VK_TO_VSC)<<16);if(key>=VK_PRIOR && key<=VK_DOWN)scan|=1L<<24;
  if(!GetKeyNameTextA(scan,out,40))snprintf(out,40,"%u",key);
+}
+/* Only TR1 currently has a runtime; disabled games cannot receive selection.
+   With one supported game, TR1 is also the valid last-game/style fallback. */
+static void frontend_game_selector(void){
+ TombDialogEntry entries[32];tomb_dialog_layout(71,launcher_game,1,entries);
+ for(int i=0;i<7;i++){
+  entries[i].flags=TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE;
+  entries[i].y+=250;
+  if(entries[i].panel_width)entries[i].panel_width=i==0?390:i==1?386:378;
+ }
+ entries[0].panel_height=40+18*5;
+ frontend_entry(entries," ",0);frontend_entry(entries+1,"Select Game",0);
+ for(int i=0;i<5;i++){
+  TombDialogEntry *entry=entries+i+2;
+  if(i==launcher_game)frontend_entry(entry,game_names[i],0);
+  else{
+   double scale=ui_scale();
+   text_aligned_tinted((float)(entry->x*scale),(float)(entry->y*scale),game_names[i],(unsigned)entry->flags,.35f);
+  }
+ }
 }
 static void frontend_overlay(void){
  TombRing *r=&inventory_ring;TombRingItem *i=r->items+r->current;

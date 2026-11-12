@@ -37,11 +37,13 @@ def install(selected,destination,payload,progress,cancel):
     if stage.parent!=destination.parent or not stage.name.startswith('.trb-setup-'):raise ValueError('Invalid staging directory')
     committed=False
     try:
-        source=stage/'Source/PS1'
+        from install_layout import create_game_directories
+        create_game_directories(stage)
+        source=stage/'Source/TR1/PS1'
         for edition in ('DOS','PS1','TRR'):
-            for folder in ('DATA','FMV','AUDIO','SAVES'):(stage/'Source'/edition/folder).mkdir(parents=True)
+            for folder in ('DATA','FMV','AUDIO','SAVES'):(stage/'Source'/'TR1'/edition/folder).mkdir(parents=True)
         for folder in ('PSXDATA','DELDATA','FMV','AUDIO'):(source/'Original'/folder).mkdir(parents=True)
-        (stage/'Custom').mkdir()
+        (stage/'Custom/TR1').mkdir(parents=True, exist_ok=True)
         for name in RUNTIME_FILES:shutil.copy2(payload/name,stage/name)
         install_bundled_campaign(stage,payload)
         (stage/'sine.bin').write_bytes(generated_sine())
@@ -84,7 +86,8 @@ def install(selected,destination,payload,progress,cancel):
                 records.append(dict(path=file.relative_to(source).as_posix(),bytes=file.stat().st_size,sha256=digest))
         (source/'import-manifest.json').write_text(json.dumps(dict(format=2,asset_format=1,converter=1,edition='PS1',input_kind='cue',files=records),indent=2))
         (stage/'trb-install.json').write_text(json.dumps(dict(format=2,asset_format=1,portable=True,sources=['PS1'])))
-        (stage/'settings.ini').write_text('[Display]\npreset=Optimal\n')
+        (stage/'Config/TR1').mkdir(parents=True, exist_ok=True)
+        (stage/'Config/TR1/settings.ini').write_text('[Display]\npreset=Optimal\n')
         check_cancel(cancel)
         if destination.exists():destination.rmdir()
         os.rename(stage,destination);committed=True;progress(100,'Installation complete');return destination

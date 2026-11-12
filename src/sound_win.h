@@ -19,6 +19,10 @@ void tomb_sound_output_frame(TombSoundOutput *,const TombSoundEvent *,size_t cou
 void tomb_sound_output_spatial_frame(TombSoundOutput *,const TombSoundEvent *,size_t,int,int,const double listener[3],const double origin[3],int yaw);
 TombSoundOutputStats tomb_sound_output_stats(TombSoundOutput *);
 void tomb_sound_output_reset(TombSoundOutput *);
+/* Replace a single music voice without closing the device. Storage and bank
+   belong to the caller; old PCM can be released after this returns. */
+void tomb_sound_output_track(TombSoundOutput *,TombSoundBank *,TombSoundSample *,const TombSoundSample *,int loop,int gain,int volume);
+unsigned tomb_sound_output_track_samples(TombSoundOutput *);
 void tomb_sound_output_close(TombSoundOutput *);
 void tomb_sound_output_volume(TombSoundOutput *,int);
 #endif

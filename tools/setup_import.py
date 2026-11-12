@@ -25,7 +25,7 @@ RUNTIME_FILES = ['TombRaiderBeyond.exe', 'TRCustomImport.exe', 'openxr_loader.dl
 
 def bundled_campaign_files(payload):
     """Only setup-owned UB assets may be replaced; never saves or user data."""
-    base = Path(payload)/'Source/UB'
+    base = Path(payload)/'Source/TR1/UB'
     if not base.exists():
         return []  # Development payloads may omit the optional expansion.
     from prepare_ub import LEVELS as UB_LEVELS, PICTURES as UB_PICTURES
@@ -36,7 +36,7 @@ def bundled_campaign_files(payload):
         file = base/name
         if not file.is_file() or name not in records or hashlib.sha256(file.read_bytes()).hexdigest() != records[name]['sha256']:
             raise ValueError(f'Invalid bundled Unfinished Business file: {name}')
-    return ['Source/UB/'+name for name in files + ['import-manifest.json']]
+    return ['Source/TR1/UB/'+name for name in files + ['import-manifest.json']]
 
 
 def install_bundled_campaign(destination, payload):
@@ -47,7 +47,7 @@ def install_bundled_campaign(destination, payload):
         shutil.copy2(Path(payload)/name, target)
     if files:
         for folder in ('SAVES', 'AUDIO', 'FMV'):
-            (Path(destination)/'Source/UB'/folder).mkdir(parents=True, exist_ok=True)
+            (Path(destination)/'Source/TR1/UB'/folder).mkdir(parents=True, exist_ok=True)
 
 
 class Cancelled(Exception):
@@ -252,6 +252,14 @@ def inspect_installation(selected):
 
 
 def update_installation(selected, payload, progress=lambda value, text: None, cancel=None):
+    from install_layout import migration_transaction
+    destination = inspect_installation(selected)
+    check_cancel(cancel)
+    with migration_transaction(destination):
+        return _update_installation(destination, payload, progress, cancel)
+
+
+def _update_installation(selected, payload, progress=lambda value, text: None, cancel=None):
     """Replace only owned runtime files; roll back replacements on failure."""
     destination = inspect_installation(selected)
     marker = destination/'trb-install.json'
@@ -325,7 +333,7 @@ def update_installation(selected, payload, progress=lambda value, text: None, ca
             raise
         if campaign_files:
             for folder in ('SAVES', 'AUDIO', 'FMV'):
-                (destination/'Source/UB'/folder).mkdir(parents=True, exist_ok=True)
+                (destination/'Source/TR1/UB'/folder).mkdir(parents=True, exist_ok=True)
         progress(100, 'Update complete')
         return destination
     finally:
@@ -373,17 +381,17 @@ def install_sources(selections, destination, payload, progress=lambda value, tex
                     lambda value, text, index=index, edition=edition:
                         progress((index + value/100) * 95/len(selections), f'{edition}: {text}'), cancel)
             if index:
-                placeholder = bundle/'Source'/edition
+                placeholder = bundle/'Source'/'TR1'/edition
                 # The earlier importer creates empty folders for other editions.
                 if any(p.is_file() or p.is_symlink() for p in placeholder.rglob('*')):
                     raise ValueError('Unexpected data in an unselected source folder.')
                 shutil.rmtree(placeholder)
-                os.rename(target/'Source'/edition, placeholder)
+                os.rename(target/'Source'/'TR1'/edition, placeholder)
         (bundle/'trb-install.json').write_text(json.dumps(dict(
             format=2, asset_format=ASSET_VERSION, portable=True, sources=editions)))
         # The runtime resolves Optimal's independent preferences against the
         # installed sources (including PS1+DOS audio when both are present).
-        (bundle/'settings.ini').write_text('[Display]\npreset=Optimal\n')
+        (bundle/'Config/TR1/settings.ini').write_text('[Display]\npreset=Optimal\n')
         check_cancel(cancel)
         if destination.exists():
             destination.rmdir()  # Refuse if another process populated it meanwhile.
@@ -414,11 +422,13 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
         raise ValueError('Invalid staging directory.')
     committed = False
     try:
-        source = stage/'Source'/'DOS'
+        from install_layout import create_game_directories
+        create_game_directories(stage)
+        source = stage/'Source'/'TR1'/'DOS'
         for edition in ['DOS', 'PS1', 'TRR']:
             for folder in ['DATA', 'FMV', 'AUDIO', 'SAVES', 'Original/DATA', 'Original/FMV', 'Original/AUDIO']:
-                (stage/'Source'/edition/folder).mkdir(parents=True, exist_ok=True)
-        (stage/'Custom').mkdir()
+                (stage/'Source'/'TR1'/edition/folder).mkdir(parents=True, exist_ok=True)
+        (stage/'Custom/TR1').mkdir(parents=True, exist_ok=True)
         for name in RUNTIME_FILES:
             shutil.copy2(payload/name, stage/name)
         install_bundled_campaign(stage, payload)
@@ -467,7 +477,8 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
                 records.append(dict(path=p.relative_to(source).as_posix(), bytes=p.stat().st_size, sha256=digest))
         (source/'import-manifest.json').write_text(json.dumps(dict(edition='DOS', input_kind=kind, format=2, asset_format=ASSET_VERSION, converter=1, files=records), indent=2))
         (stage/'trb-install.json').write_text(json.dumps(dict(format=2, portable=True, asset_format=ASSET_VERSION, sources=['DOS'])))
-        (stage/'settings.ini').write_text('[Display]\npreset=Optimal\n')
+        (stage/'Config/TR1').mkdir(parents=True, exist_ok=True)
+        (stage/'Config/TR1/settings.ini').write_text('[Display]\npreset=Optimal\n')
         check_cancel(cancel)
         if destination.exists():
             destination.rmdir()  # Empty only; never remove an existing installation.

@@ -11,6 +11,9 @@ typedef struct TombVrInput {
 } TombVrInput;
 typedef struct TombVrHand {
     int weapon,pickup,gripped,triggered,anchored,hover;
+    double pickup_grip[16];
+    double item_offset[16]; /* Held item's virtual grip relative to this hand. */
+    TombActor pickup_start;
     double anchor[3],previous[3],automatic,flash,ledge_normal[3];
     int support,pump,pump_ready,ledge_room;
     double pump_origin;
@@ -21,6 +24,7 @@ typedef struct TombVr {
     TombVrInput input;
     double yaw,last_head[3],feet[3],vertical,swim_speed,climb_offset;
     int ready,snap_latch,jump_latch,menu_latch,menu_request;
+    int gym_hands;
     int level_room,swimming,menu_open,menu_primary;
     double wrist_alpha[2];
     struct { TombCameraPoint origin; int weapon,hand; int16_t yaw,pitch; } shots[64];
@@ -36,6 +40,13 @@ void tomb_vr_reset(TombVr *,const TombPlaytest *);
 void tomb_vr_point(const TombVr *,const double local[3],double world[3]);
 void tomb_vr_direction(const TombVr *,const TombVrPose *,double direction[3]);
 void tomb_vr_matrix(const TombVr *,const TombVrPose *,double matrix[16]);
+void tomb_vr_pickup_motion(const TombVr *,int hand,double matrix[16]);
+void tomb_vr_item_matrix(const TombVr *,int hand,double matrix[16]);
+typedef struct TombVrPickupPose { TombModel model;TombPose pose;TombActor light_actor;double matrix[64][16]; } TombVrPickupPose;
+int tomb_vr_pickup_pose(const TombVr *,const TombPlaytest *,const TombObject *,int16_t yaw,TombVrPickupPose *);
+int tomb_vr_key_matrix(const TombVr *,const TombPlaytest *,int hand,TombModel *,double matrix[16]);
+int tomb_vr_pickup_contact(const TombVr *,const TombPlaytest *,int hand,const TombObject *);
+int tomb_vr_key_contact(const TombVr *,const TombPlaytest *,int hand,int owner);
 void tomb_vr_hand_matrix(const TombVr *,int hand,double matrix[16]);
 int tomb_vr_barrel(const TombMeshView *,int weapon,double rear[3],double muzzle[3]);
 void tomb_vr_weapon_matrix(const TombVr *,int hand,const TombMeshView *,double matrix[16]);
