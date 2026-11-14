@@ -8,6 +8,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "visual.h"
+#include "render_distance.h"
 #include "picture.h"
 #include "lighting.h"
 #include "object_contact.h"
@@ -51,20 +52,12 @@ static TombVisual *cinematic_equipment;
 static GLuint *cinematic_equipment_tiles;
 static int cinematic_sidearm,cinematic_shotgun;
 
-enum { DRAW_ORIGINAL, DRAW_NO_FOG, DRAW_MAX_FOG, DRAW_SMOOTH_FOG, DRAW_DISTANCE_COUNT };
 static int settings_draw_distance=DRAW_SMOOTH_FOG;
-static const char *draw_distance_names[DRAW_DISTANCE_COUNT]={"Original","Max Distance","Max Distance with Fog","Max Distance with Smooth Fog"};
 static int extended_fog_enabled(void){
     return settings_draw_distance==DRAW_MAX_FOG || settings_draw_distance==DRAW_SMOOTH_FOG;
 }
-static int camera_distance(double x,double y,double z){
-    return (int)sqrt(x*x+y*y+z*z);
-}
 static int max_distance_fog_shade(int shade,int depth){
-    const int fog_limit=7987;
-    if(depth<=12288 || shade>=fog_limit)return shade;
-    int darkness=depth-12288;
-    return darkness>=fog_limit-shade?fog_limit:shade+darkness;
+    return tomb_render_fog_shade(shade,depth);
 }
 static double world_far_distance=20480;
 static double world_far_plane(void){
@@ -75,8 +68,7 @@ static double world_far_plane(void){
   double a[3]={r->x,r->top,r->z},b[3]={(double)r->x+r->nx*1024,r->bottom,(double)r->z+r->nz*1024};
   for(int k=0;k<3;k++){lo[k]=fmin(lo[k],a[k]);hi[k]=fmax(hi[k],b[k]);}
  }
- double x=hi[0]-lo[0],y=hi[1]-lo[1],z=hi[2]-lo[2];
- return fmax(20480,sqrt(x*x+y*y+z*z)+8192);
+ return tomb_render_max_distance(lo,hi);
 }
 static TombObjects objects;
 static int16_t sine_table[1025];
@@ -178,7 +170,8 @@ static int settings_framerate=0,settings_vsync=1,settings_force43=0;
 /* Visual styles are independent of source IDs; Custom is a preset status. */
 static const char *visual_style_names[]={"PS1","DOS","DOS 3DFX","PS1 Colour with DOS Effect"};
 static const char *preset_names[]={"Optimal","DOS","DOS 3DFX","PS1"};
-static int settings_water_style=3,settings_preset=0;
+static int settings_water_style=3,settings_preset=0,settings_source_preset=0;
+static const char *source_preset_names[]={"Optimal","DOS","PS1"};
 static int settings_full_colour=1,settings_texture_filtering=0;
 static int water_ps1_colour(void){return settings_water_style==0 || settings_water_style==3;}
 static int water_tint(int wet){return water_ps1_colour()?(water_eye || wet?2:0):settings_water_style==2?(water_eye || wet?1:0):water_eye;}
@@ -219,6 +212,7 @@ static void game_level_path(char *path,int number){
  if(number>=UB_FIRST_LEVEL){char relative[80];snprintf(relative,sizeof relative,"DATA/%s",level_choices[number].file);ub_path(path,relative);}
  else asset_path(path,level_choices[number].file);
 }
+#include "save_slots.h"
 static void save_path(char *path,int slot){
  char base[MAX_PATH],folder[MAX_PATH];
  if(custom_campaign_id)custom_path(folder,custom_campaign_id,"SAVES");
@@ -233,7 +227,7 @@ static void save_path(char *path,int slot){
  else {source_base(base,source_selected);snprintf(folder,sizeof folder,"%s/SAVES",base);}
  CreateDirectoryA(folder,NULL);
  if(slot==16)snprintf(path,MAX_PATH,"%s/autosave.tsv",folder);
- else snprintf(path,MAX_PATH,"%s/slot%02d.tsv",folder,slot+1);
+ else tomb_manual_slot_path(path,MAX_PATH,folder,slot,"tsv");
 }
 static TombInventory autosave_inventory;
 static int autosave_switch_held(size_t index);
@@ -396,7 +390,6 @@ static void audio_start_track(int track,int gain) {
     if(track && (!ready || !music_output))snprintf(audio_error,sizeof audio_error,"Music track %d unavailable",track);
 }
 static void audio_update(int suspended,double dt) {
-    if(game_selector)return;
     int track=title_mode?2:caves?objects.progress->music.current_track:play.gym.current_track;
     unsigned serial=title_mode?0:caves?objects.progress->music.audio_serial:play.gym.audio_serial;
     if(music_selected==3 && !title_mode){
@@ -693,9 +686,7 @@ static void draw_mesh(const TombMeshView *m,int world_space) {
                 int shade,depth=mesh_depth;
                 if(world_space && settings_draw_distance==DRAW_SMOOTH_FOG){
                     double x=s16(p),y=s16(p+2),z=s16(p+4);
-                    depth=camera_distance(matrix[0]*x+matrix[4]*y+matrix[8]*z+matrix[12],
-                                          matrix[1]*x+matrix[5]*y+matrix[9]*z+matrix[13],
-                                          matrix[2]*x+matrix[6]*y+matrix[10]*z+matrix[14]);
+                    depth=tomb_mesh_camera_distance(matrix,x,y,z);
                 }else if(m->vertex_stride==8){
                     depth=(int)floor(-(matrix[2]*s16(p)+matrix[6]*s16(p+2)+matrix[10]*s16(p+4)+matrix[14]));
                 }
@@ -965,7 +956,7 @@ static void draw_billboard(int sprite,const float position[16],int intensity,int
     }else{glLoadIdentity();glTranslatef((float)v[0],(float)v[1],(float)v[2]);}
     glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glBindTexture(GL_TEXTURE_2D,tiles[(lighting_rgba()?0:visual->tile_count)+u16(p)]);lighting_filter();glColor3f(1,1,1);
     int depth=settings_draw_distance==DRAW_NO_FOG?0:(int)-v[2];
-    if(settings_draw_distance==DRAW_SMOOTH_FOG)depth=camera_distance(v[0],v[1],v[2]);
+    if(settings_draw_distance==DRAW_SMOOTH_FOG)depth=tomb_camera_distance(v[0],v[1],v[2]);
     int shade=extended_fog_enabled()?fmin(8191,fmax(0,max_distance_fog_shade(intensity,depth))):tomb_sprite_shade((int16_t)intensity,depth);
     if(shade<0){glPopMatrix();return;}
     /* Keep the image on the original billboard, but fold its depth proxy onto
@@ -1408,11 +1399,6 @@ static void text_aligned(float x,float y,const char *text,unsigned flags){text_a
 #include "ui_dialog.h"
 #include "preview_frontend.h"
 static void inventory_tick(unsigned input) {
-    if(game_selector){
-        if(input&TOMB_RING_BACK){running=0;return;}
-        if(input&TOMB_RING_SELECT){game_intro_pending=1;inventory_input=0;}
-        return;
-    }
     ring_previous=inventory_ring;compass_previous=compass_angle;
     if(inventory_ring.motion.status==2 && inventory_ring.motion.target==13){if(backdrop_shade>32)--backdrop_shade;}else if(backdrop_shade<48)++backdrop_shade;
     if(coop_connected && objects.pickup_claims){
@@ -1567,12 +1553,8 @@ static void overlay(void) {
     int medipack=0;
     if(inventory_open || complete) {
         if(overlay_pass!=2 && !title_mode && !vr_hand_ring())frontend_inventory_backdrop();
-        if(overlay_pass!=2 && title_mode){
-            if(game_selector){glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);}
-            else frontend_backdrop();
-        }
-        if(game_selector){if(overlay_pass!=1)frontend_game_selector();}
-        else if(complete) {
+        if(overlay_pass!=2 && title_mode)frontend_backdrop();
+        if(complete) {
             char lines[4][80];tomb_statistics(play.inventory.ticks,play.pistols.kills,play.inventory.pickups,objects.progress->secrets,tomb_level_secret_total(level_number),lines);
             if(overlay_pass!=1){ui_text(0,-50,game_level_name(level_number),TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
             for(int i=0;i<4;i++)ui_text(0,-20+30*i,lines[i],TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);}
@@ -1587,7 +1569,7 @@ static void overlay(void) {
             }
         }
     }
-    if(overlay_pass!=1 && inventory_open && !game_selector)frontend_overlay();
+    if(overlay_pass!=1 && inventory_open)frontend_overlay();
     if(overlay_pass!=1 && !title_mode && !complete && (!inventory_open || medipack)) {
         glDisable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);
         TombPlaytest *subject=coop_connected && objects.pickup_claims && play.lara.health<=0 && partner.lara.health>0?&partner:&play;
@@ -1773,6 +1755,7 @@ static int draw_frame(void);
 #endif
 /* Legacy saved values: DOS Low=0, DOS High=1, Full=2; PS1=3.
    Extend horizontal resolution for widescreen and correct non-square pixels. */
+#include "render_resolution.h"
 static int draw_frame_composite(int include_ui){
  if(settings_detail==2){
   int ok=1;if(include_ui==2 || (include_ui && title_mode)){glViewport(0,0,width,height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);}else ok=draw();
@@ -1781,10 +1764,7 @@ static int draw_frame_composite(int include_ui){
  static GLuint texture;int full_w=width,full_h=height;
  int base_w=settings_detail==3?384:settings_detail==1?640:320;
  int target=settings_detail==3?240:settings_detail==1?480:200;
- width=(int)(((int64_t)full_w*base_w*3+full_h*2)/((int64_t)full_h*4));if(width<1)width=1;
- height=target;
- /* The back-buffer render path cannot exceed the drawable dimensions. */
- if(width>full_w || height>full_h){double fit=fmin((double)full_w/width,(double)full_h/height);width=(int)(width*fit);height=(int)(height*fit);if(width<1)width=1;if(height<1)height=1;}
+ tomb_render_extent(full_w,full_h,base_w,target,&width,&height);
  render_pixel_scale=(double)width*full_h/(height*(double)full_w);
  int ok=1;
  if(include_ui==2 || (include_ui && title_mode)){glViewport(0,0,width,height);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);}else ok=draw();
@@ -1829,9 +1809,7 @@ static unsigned menu_entries=0;
 static void display_size(HWND window){
     RECT client;GetClientRect(window,&client);width=client.right>0?client.right:1;height=client.bottom>0?client.bottom:1;
     if(settings_force43 && !xr.instance){
-        if((int64_t)width*3>(int64_t)height*4)width=height*4/3;
-        else height=width*3/4;
-        if(width<1)width=1;if(height<1)height=1;
+        tomb_render_fit43(&width,&height);
     }
 }
 static void display_borders(HDC dc){
@@ -1854,24 +1832,12 @@ static void display_borders(HDC dc){
     glTexCoord2f(1,1);glVertex2f(1,1);glTexCoord2f(0,1);glVertex2f(-1,1);glEnd();glDisable(GL_TEXTURE_2D);
     glPopAttrib();
 }
+#include "frame_limit.h"
+#include "presentation_sync.h"
 static void display_present(HDC dc){
-    typedef BOOL (WINAPI *SwapInterval)(int);
-    static SwapInterval interval;static int resolved,applied=-1;
     static LARGE_INTEGER previous;
-    LARGE_INTEGER frequency,now;QueryPerformanceFrequency(&frequency);
-    if(!resolved){PROC proc=wglGetProcAddress("wglSwapIntervalEXT");if(proc && (INT_PTR)proc!=-1 && (UINT_PTR)proc>3)memcpy(&interval,&proc,sizeof interval);resolved=1;}
-    int sync=xr.instance?0:settings_vsync;
-    if(interval && applied!=sync){interval(sync);applied=sync;}
-    QueryPerformanceCounter(&now);
-    if(!xr.instance && settings_framerate && previous.QuadPart){
-        double period=1.0/(settings_framerate==1?60:30);
-        /* Leave a small lead for the driver to queue the next synced swap. */
-        double lead=sync && interval?.001:0;
-        while((double)(now.QuadPart-previous.QuadPart)/frequency.QuadPart<period-lead){
-            double remaining=period-lead-(double)(now.QuadPart-previous.QuadPart)/frequency.QuadPart;
-            Sleep(remaining>.002?1:0);QueryPerformanceCounter(&now);
-        }
-    }
+    int synced=tomb_presentation_sync(xr.instance?0:settings_vsync);
+    if(!xr.instance)tomb_frame_limit_wait(previous,settings_framerate,synced);
     display_borders(dc);SwapBuffers(dc);QueryPerformanceCounter(&previous);
 }
 #include "preview_media.h"
@@ -2092,7 +2058,18 @@ static int jaw_diagnostic_tick(TombPlaytest *p,uint32_t input){
  fprintf(jaw_log,"%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%d,%d,%d,%d,%d,%d,%d,%d,%u,%d,%d,%u,%u,%d\n",input,health,p->lara.health,before.x,before.y,before.z,before.yaw,before.animation,before.frame,before.flags,a->x,a->y,a->z,a->yaw,a->current,a->animation,a->frame,a->fall_speed,a->flags,f2,f3,touch2,touch3,floor_state);
  return ok;
 }
-int main(int argc,char **argv) {
+#include "preview_launcher.h"
+#include "preview_launcher_tr1.h"
+#include "tr2_menu.h"
+static int tr2_main(int argc,char **argv){
+ xr_close();pad_init();Tr2MenuHost host={launcher_window.window,launcher_window.dc,launcher_pad,toggle_fullscreen};
+#ifdef TOMB_BUILD_TESTS
+ char *test_args[]={"TombRaiderBeyond","--tr2-test"};
+ if(getenv("TRB_LAUNCHER_HANDOFF_TEST")){argc=2;argv=test_args;}
+#endif
+ int result=tr2_menu_run(&host,argc,argv);pad_close();return result;
+}
+static int tr1_main(int argc,char **argv) {
     pad_defaults();
 #ifndef TOMB_BUILD_TESTS
     /* Test switches must not silently run an ordinary game build. */
@@ -2141,6 +2118,7 @@ int main(int argc,char **argv) {
         else if(!strcmp(argv[i],"--coop-host"))coop_mode=1;
         else if(!strcmp(argv[i],"--coop-join") && i+1<argc){coop_mode=2;coop_address=argv[++i];}
         else if(!strcmp(argv[i],"--caves")){caves=1;level_number=1;}
+        else if(!strcmp(argv[i],"--eidos-picture-test")){caves=1;level_number=1;}
         else if(!strcmp(argv[i],"--xr-probe") || !strcmp(argv[i],"--vr-render-test") || !strcmp(argv[i],"--vr-movie-test")){caves=1;level_number=1;}
         else if(!strcmp(argv[i],"--interest-test"))interest_test=1;
         else if(!strcmp(argv[i],"--quest-ui-test"))quest_ui_test=1;
@@ -2310,7 +2288,9 @@ int main(int argc,char **argv) {
     /* width/height describe the client area, excluding the title and borders. */
     RECT initial_window={0,0,width,height};
     if(!AdjustWindowRectEx(&initial_window,WS_OVERLAPPEDWINDOW,FALSE,0))return 1;
-    HWND window=CreateWindowA(wc.lpszClassName,"Tomb Raider Beyond",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,initial_window.right-initial_window.left,initial_window.bottom-initial_window.top,NULL,NULL,instance,NULL);
+    HWND window=launcher_window.window;
+    if(window)SetWindowLongPtrA(window,GWLP_WNDPROC,(LONG_PTR)window_proc);
+    else window=CreateWindowA(wc.lpszClassName,"Tomb Raider Beyond",WS_OVERLAPPEDWINDOW,CW_USEDEFAULT,CW_USEDEFAULT,initial_window.right-initial_window.left,initial_window.bottom-initial_window.top,NULL,NULL,instance,NULL);
     if(!window) return 1;
     if(window_input_test) {
         HCURSOR saved_cursor=GetCursor();
@@ -2545,17 +2525,18 @@ int main(int argc,char **argv) {
         DestroyWindow(window);return 0;
     }
     display_size(window);
-    HDC dc=GetDC(window); PIXELFORMATDESCRIPTOR pfd={0}; pfd.nSize=sizeof pfd; pfd.nVersion=1;
+    HDC dc=launcher_window.dc?launcher_window.dc:GetDC(window); PIXELFORMATDESCRIPTOR pfd={0}; pfd.nSize=sizeof pfd; pfd.nVersion=1;
     pfd.dwFlags=PFD_DRAW_TO_WINDOW|PFD_SUPPORT_OPENGL|PFD_DOUBLEBUFFER; pfd.iPixelType=PFD_TYPE_RGBA;
     pfd.cColorBits=24; pfd.cDepthBits=24;
     int format=ChoosePixelFormat(dc,&pfd);
-    if(!format || !SetPixelFormat(dc,format,&pfd)) return 1;
-    HGLRC context=wglCreateContext(dc);
+    if(!launcher_window.context && (!format || !SetPixelFormat(dc,format,&pfd))) return 1;
+    HGLRC context=launcher_window.context?launcher_window.context:wglCreateContext(dc);
     if(!context || !wglMakeCurrent(dc,context)) return 1;
     glEnable(GL_DEPTH_TEST); glAlphaFunc(GL_GREATER,.5f); glClearColor(0,0,0,1);
     if(!make_tiles())return 1;
     if(strstr(GetCommandLineA(),"--xr-probe")){int available=xr_open();FILE *report=fopen("build/xr-probe.txt","w");if(report){fprintf(report,"OpenGL: %s\nOpenXR session: %s\n%s\n",glGetString(GL_VERSION),available?"created":"unavailable",xr.error);fclose(report);}xr_close();return available?0:2;}
 #ifdef TOMB_BUILD_TESTS
+    if(strstr(GetCommandLineA(),"--eidos-picture-test"))return play_eidos_picture(1)?0:2;
     if(strstr(GetCommandLineA(),"--vr-render-test"))return vr_render_check()?0:2;
     if(jaw_render_test)return jaw_render_check()?0:2;
     if(door_render_test)return door_render_check()?0:2;
@@ -2637,7 +2618,6 @@ int main(int argc,char **argv) {
             inventory_tick(TOMB_RING_SELECT);slot_current=15;
         }
     }
-    if(front_capture==8){launcher_choose(source_available?1u:0u);game_selector=1;}
     if(transition_test) {
         int expected_level=level_number+1;
         if(level_number==2 || level_number==3){finish_start();if(!tomb_playtest_tick(&play,0) || !objects.progress->complete)return 2;}
@@ -2662,7 +2642,7 @@ int main(int argc,char **argv) {
             tomb_sound_init(&ring_sound_mixer,&sound_bank);ring_sound_output=tomb_sound_output_open(&ring_sound_mixer);
         }
         if(!sound_output || !ring_sound_output)sound_failed=1;
-        toggle_fullscreen(window);
+        if(!fullscreen)toggle_fullscreen(window);
         ShowWindow(window,SW_SHOW);
     }
     /* An idle, unfocused window still needs a regularly dispatched message. */
@@ -2673,7 +2653,17 @@ int main(int argc,char **argv) {
         MessageBoxA(window,xr.error,"Virtual Reality unavailable",MB_OK|MB_ICONWARNING);
         launch_vr=0;
     }
-    if(title_mode && !shot && !front_test && !front_capture){launcher_choose(source_available?1u:0u);game_selector=1;audio_stop();}
+#ifdef TOMB_BUILD_TESTS
+    if(getenv("TRB_LAUNCHER_HANDOFF_TEST")){
+        int passed=window==launcher_window.window && context==launcher_window.context && dc==launcher_window.dc
+            && level && visual && title_mode && inventory_open && sound_output && ring_sound_output
+            && (WNDPROC)GetWindowLongPtrA(window,GWLP_WNDPROC)==window_proc;
+        if(passed)passed=draw_frame_composite(1);
+        fprintf(stderr,"Launcher to TR1 handoff: %s\n",passed?"PASS":"FAIL");
+        return passed?0:2;
+    }
+#endif
+    if(title_mode && !shot && !front_test && !front_capture){play_eidos_picture(0);if(running)play_movie("CORE",0);if(running)play_movie("ESCAPE",0);if(running)play_movie("CAFE",0);}
     if(jaw_diagnostic){
         if(!load_game_level(7,0,NULL) || !tomb_save_read("dist/caves-playtest-92/saves/slot02.tsv",7,&play,&objects,&camera,&level_inventory))return 2;
         play.lara.health=play.water.health=play.movement.health=1000;
@@ -2703,13 +2693,6 @@ int main(int argc,char **argv) {
         display_size(window);
         if(menu_session && !coop_mode)menu_coop_poll(window);
         if(!menu_session && !coop_mode)autosave_poll();
-        if(game_intro_pending){
-            game_intro_pending=0;char launcher[MAX_PATH];snprintf(launcher,sizeof launcher,"%s/launcher.ini",install_root);
-            WritePrivateProfileStringA("Launcher","last_game",game_ids[launcher_game],launcher);
-            play_movie("CORE",0);if(running)play_movie("ESCAPE",0);if(running)play_movie("CAFE",0);
-            game_selector=0;memset(held_keys,0,sizeof held_keys);inventory_input=0;frontend_title();
-            QueryPerformanceCounter(&last);
-        }
         MSG msg;
         while(PeekMessage(&msg,NULL,0,0,PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
         QueryPerformanceCounter(&now); double dt=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart; last=now;
@@ -2827,7 +2810,40 @@ int main(int argc,char **argv) {
     glDeleteTextures(1,&crystal_scene);
     glDeleteTextures(2,shadow_textures);
     light_DeleteProgram(shade_program);
-    wglMakeCurrent(NULL,NULL); wglDeleteContext(context); ReleaseDC(window,dc); DestroyWindow(window);
+    wglMakeCurrent(NULL,NULL); wglDeleteContext(context); ReleaseDC(window,dc); DestroyWindow(window);memset(&launcher_window,0,sizeof launcher_window);
     free(room_rects);tomb_objects_free(&objects);tomb_visual_free(visual); tomb_level_free(level);
     return ok?0:1;
+}
+
+/* Register game entry points here. Disabled entries have no engine dependency. */
+static const TombLauncherGame launcher_games[]={
+ {"TR1","Tomb Raider",tr1_launcher_available,tr1_launcher_style_open,tr1_launcher_style_free,tr1_main},
+ {"TR2","Tomb Raider II",tr2_menu_available,tr2_menu_style,tr2_menu_style_free,tr2_main},
+ {"TR3","Tomb Raider III",NULL,NULL,NULL,NULL},
+ {"TR4","Tomb Raider: The Last Revelation",NULL,NULL,NULL,NULL},
+ {"TR5","Tomb Raider Chronicles",NULL,NULL,NULL,NULL}
+};
+int main(int argc,char **argv){
+ int direct_tr2=0;for(int i=1;i<argc;i++)if(!strncmp(argv[i],"--tr2",5))direct_tr2=1;
+ if(direct_tr2){source_root_init();if(!layout_prepare())return 1;tr2_menu_root(install_root);if(!launcher_window_open())return 1;
+  int hidden=0;for(int i=1;i<argc;i++)if(!strcmp(argv[i],"--tr2-test") || !strcmp(argv[i],"--capture"))hidden=1;
+  if(!hidden)ShowWindow(launcher_window.window,SW_SHOW);int result=tr2_main(argc,argv);launcher_window_close();return result;}
+ int use_launcher=1,vr_requested=0,selector_capture=0;const char *shot=NULL;
+ for(int i=1;i<argc;i++){
+  if(!strcmp(argv[i],"--vr"))vr_requested=1;
+  else if(!strcmp(argv[i],"--title")){}
+  else if(!strcmp(argv[i],"--frontend-capture") && i+1<argc && !strcmp(argv[i+1],"8")){selector_capture=1;i++;}
+  else if(!strcmp(argv[i],"--capture") && i+1<argc)shot=argv[++i];
+  else use_launcher=0;
+ }
+ /* Existing direct-level and regression tools enter TR1 explicitly. */
+ if(!use_launcher || (shot && !selector_capture) || (selector_capture && !shot))return tr1_main(argc,argv);
+ source_root_init();
+ tr2_menu_root(install_root);
+ if(!layout_prepare()){MessageBoxA(NULL,"Could not migrate the installation folders. Check for conflicting old and new folders or files in use. No existing destination was overwritten.","Tomb Raider Beyond",MB_OK|MB_ICONERROR);return 1;}
+ int selected=launcher_run(launcher_games,5,vr_requested,shot);
+ if(selected<0)return selected==-2?0:1;
+ int result=launcher_games[selected].start(argc,argv);
+ if(launcher_window.window)launcher_window_close();
+ return result;
 }

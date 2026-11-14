@@ -3,19 +3,7 @@
 #include "asset.h"
 static char install_root[MAX_PATH];
 static int custom_campaign_id;
-static int game_selector,game_intro_pending;
-static const char *game_ids[]={"TR1","TR2","TR3","TR4","TR5"};
-static const char *game_names[]={"Tomb Raider","Tomb Raider II","Tomb Raider III","Tomb Raider: The Last Revelation","Tomb Raider Chronicles"};
-static int launcher_game;
 #include "preview_layout.h"
-static void launcher_choose(unsigned available){
- char path[MAX_PATH],last[16];snprintf(path,sizeof path,"%s/launcher.ini",install_root);
- GetPrivateProfileStringA("Launcher","last_game","",last,sizeof last,path);
- /* Extend this mask as each game's loader/runtime becomes available. */
- launcher_game=0;
- for(int i=0;i<5;i++)if((available&(1u<<i)) && !strcmp(last,game_ids[i])){launcher_game=i;return;}
- for(int i=0;i<5;i++)if(available&(1u<<i)){launcher_game=i;return;}
-}
 static void custom_path(char *path,int id,const char *relative){
  snprintf(path,MAX_PATH,"%s/Custom/TR1/%d/%s",install_root,id,relative);
 }

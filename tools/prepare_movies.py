@@ -2,6 +2,7 @@
 Requires PyAV (FFmpeg bindings) only during preparation, never at runtime.
 """
 import argparse,struct
+from fractions import Fraction
 from pathlib import Path
 
 def convert(source,destination,cancel=None):
@@ -11,6 +12,13 @@ def convert(source,destination,cancel=None):
     try:
         with av.open(str(source)) as container,temporary.open('wb') as output:
             video=container.streams.video[0];rate=video.average_rate
+            # Escape 130 RPL exposes 0/0 average_rate in FFmpeg. The original
+            # ARMovie header carries the explicit frame rate on line nine.
+            if not rate:
+                with source.open('rb') as header:
+                    lines=[header.readline(1024) for _ in range(9)]
+                if lines[0].strip()==b'ARMovie':
+                    rate=Fraction(lines[8].split()[0].decode('ascii'))
             width,height=video.codec_context.width,video.codec_context.height
             if not rate or not 0<width<=2048 or not 0<height<=2048:raise ValueError('Invalid video dimensions/rate')
             output.write(bytes(40));count=0;audio=bytearray()

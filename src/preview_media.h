@@ -84,6 +84,44 @@ static int media_audio_check(void){
     settings_music=saved_music;
     media_audio_close(&audio);return ok;
 }
+/* DOS startup 3855f-3857d: DATA/EIDOSPC.PCX, 60-tick palette fade,
+   wait for completion without a skip check, then enter the movie sequence. */
+static int play_eidos_picture(int test){
+    if(source_selected!=1)return 1;
+    char path[MAX_PATH];source_path_for(path,"DATA/EIDOSPC.PCX",source_selected);
+    unsigned char *rgb=tomb_picture_load(path);if(!rgb)return 0;
+    HDC dc=wglGetCurrentDC();HWND window=WindowFromDC(dc);media_begin();
+    GLuint texture=0;glGenTextures(1,&texture);glBindTexture(GL_TEXTURE_2D,texture);
+    glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MIN_FILTER,GL_NEAREST);glTexParameteri(GL_TEXTURE_2D,GL_TEXTURE_MAG_FILTER,GL_NEAREST);
+    glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,1024,512,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);free(rgb);
+    LARGE_INTEGER frequency,last,now;QueryPerformanceFrequency(&frequency);QueryPerformanceCounter(&last);
+    double elapsed=0;int active=-1,ok=1,frame=0;uint64_t previous=0;MediaAudio silent={0};
+    while(running){
+        if(!test){media_messages(&silent,window,&active);media_skip=0;if(!running)break;}
+        if(media_wait_in_background(active,&last))continue;
+        QueryPerformanceCounter(&now);if(active==1)elapsed+=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart;last=now;
+        if(test)elapsed=frame*.5;
+        float brightness=(float)fmin(1,elapsed);
+        light_UseProgram(0);glDisable(GL_DEPTH_TEST);glDisable(GL_ALPHA_TEST);glDisable(GL_BLEND);glDisable(GL_SCISSOR_TEST);
+        glTexEnvi(GL_TEXTURE_ENV,GL_TEXTURE_ENV_MODE,GL_MODULATE);glViewport(0,0,width,height);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);
+        int vw=width,vh=width*3/4;if(vh>height){vh=height;vw=height*4/3;}glViewport((width-vw)/2,(height-vh)/2,vw,vh);
+        glMatrixMode(GL_PROJECTION);glLoadIdentity();glOrtho(0,1,1,0,-1,1);glMatrixMode(GL_MODELVIEW);glLoadIdentity();
+        glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,texture);glColor3f(brightness,brightness,brightness);
+        glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2f(0,0);glTexCoord2f(640.f/1024,0);glVertex2f(1,0);
+        glTexCoord2f(640.f/1024,480.f/512);glVertex2f(1,1);glTexCoord2f(0,480.f/512);glVertex2f(0,1);glEnd();
+        if(test){
+            size_t bytes=(size_t)width*height*4;unsigned char *pixels=malloc(bytes);uint64_t total=0;
+            if(!pixels){ok=0;break;}
+            glReadPixels(0,0,width,height,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+            for(size_t i=0;i<bytes;i+=4)total+=pixels[i]+pixels[i+1]+pixels[i+2];free(pixels);
+            if(frame==0?total!=0:total<=previous)ok=0;previous=total;
+            if(frame==2)capture("build/eidos-startup.ppm");frame++;
+        }else{vr_media_present();display_present(dc);}
+        if(glGetError()!=GL_NO_ERROR){ok=0;break;}
+        if(elapsed>=1)break;if(!test)Sleep(1);
+    }
+    glDeleteTextures(1,&texture);media_end();return ok;
+}
 static int play_movie(const char *name,int test){
     if(!custom_campaign_id && fmv_selected==0){if(!strcmp(name,"ESCAPE"))return 1;if(!strcmp(name,"CORE"))name="CORELOGO";}
     char path[MAX_PATH],relative[80];snprintf(relative,sizeof relative,"FMV/%s.bmv",name);if(custom_campaign_id){

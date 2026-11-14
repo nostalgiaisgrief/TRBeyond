@@ -12,6 +12,8 @@ typedef struct TombSoundOutputStats { unsigned blocks,starvations,played_samples
 TombSoundOutput *tomb_sound_output_open(TombSoundMixer *);
 TombSoundOutput *tomb_sound_output_open_gain(TombSoundMixer *,int gain);
 void tomb_sound_output_gain(TombSoundOutput *,int gain);
+/* Single-track output may preserve source amplitude; defaults retain mix headroom. */
+void tomb_sound_output_unity(TombSoundOutput *,int enabled);
 int tomb_sound_output_update(TombSoundOutput *,int paused);
 /* All mixer access while the output is open must pass through this lock. */
 void tomb_sound_output_event(TombSoundOutput *,const TombSoundEvent *,int camera_wet,const double listener[3]);

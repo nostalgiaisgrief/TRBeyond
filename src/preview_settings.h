@@ -35,7 +35,9 @@ static void settings_write(void){
         WritePrivateProfileStringA("Display","texture_smoothing",NULL,path);
     WritePrivateProfileStringA("Display","draw_distance",draw_distance_names[settings_draw_distance],path);
     WritePrivateProfileStringA("Display","water_style",visual_style_names[settings_water_style],path);
-    WritePrivateProfileStringA("Display","preset",settings_preset<0?"Custom":preset_names[settings_preset],path);
+    WritePrivateProfileStringA("Display","visual_preset",settings_preset<0?"Custom":preset_names[settings_preset],path);
+    WritePrivateProfileStringA("Game","source_preset",settings_source_preset<0?"Custom":source_preset_names[settings_source_preset],path);
+    WritePrivateProfileStringA("Display","preset",NULL,path);
     snprintf(value,sizeof value,"%d",settings_force43);WritePrivateProfileStringA("Display","force43",value,path);
     snprintf(value,sizeof value,"%d",settings_framerate);WritePrivateProfileStringA("Display","framerate",value,path);
     snprintf(value,sizeof value,"%d",settings_vsync);WritePrivateProfileStringA("Display","vsync",value,path);
@@ -73,7 +75,18 @@ static void settings_read(void){
     if(title_mode)campaign_selected=ub_available()?(!strcmp(style,"Combined")?CAMPAIGN_COMBINED:!strcmp(style,"UB")?CAMPAIGN_UB:CAMPAIGN_TR):CAMPAIGN_TR;
     else if(campaign_selected!=CAMPAIGN_COMBINED)campaign_selected=level_number>=UB_FIRST_LEVEL;
     GetPrivateProfileStringA("Display","preset","Optimal",preset,sizeof preset,path);
+    GetPrivateProfileStringA("Display","visual_preset",preset,style,sizeof style,path);
+    strcpy(preset,style);
     settings_preset=-1;for(int i=0;i<4;i++)if(!strcmp(preset,preset_names[i]))settings_preset=i;
+    GetPrivateProfileStringA("Game","source_preset","",style,sizeof style,path);
+    settings_source_preset=-1;
+    for(int i=0;i<3;i++){
+        int lp=i==2?0:1,mp=i==1?1:0;
+        int matches=source_selected==source_choose(source_available,lp)
+            && music_selected==source_choose_media(music_available,i==0?3:mp)
+            && fmv_selected==source_choose_media(fmv_available,mp);
+        if(matches && (!*style || !strcmp(style,source_preset_names[i]))){settings_source_preset=i;break;}
+    }
     /* Only an absent setting inherits an initial value. Source changes never
        override the user's colour-depth choice. */
     settings_apply_preset(settings_preset<0?0:settings_preset);

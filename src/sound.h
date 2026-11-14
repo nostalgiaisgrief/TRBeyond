@@ -24,6 +24,7 @@ void tomb_sound_clear(TombSoundMixer *);
 void tomb_sound_event(TombSoundMixer *,const TombSoundEvent *,int camera_wet,const double listener[3]);
 void tomb_sound_frame(TombSoundMixer *,const TombSoundEvent *,size_t count,int flipped,int camera_wet,const double listener[3]);
 void tomb_sound_mix(TombSoundMixer *,int16_t *stereo,size_t frames);
+void tomb_sound_mix_scaled(TombSoundMixer *,int16_t *stereo,size_t frames,double gain);
 TOMB_EXPORT int tomb_sound_pan(int angle);
 TOMB_EXPORT void tomb_sound_gains(int angle,int volume,int gains[2]);
 void tomb_sound_listener(TombSoundMixer *,const double origin[3],int yaw);

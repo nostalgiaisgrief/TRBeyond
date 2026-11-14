@@ -65,3 +65,22 @@ int tomb_render_sample(const TombRenderTrack *r,uint64_t tick,int node,int ident
     }
     return 1;
 }
+uint64_t tomb_render_sample_all(const TombRenderTrack *r,uint64_t tick,double alpha,float world[TOMB_RENDER_NODES][16]){
+    if(!tick || r->tick!=tick)return 0;
+    uint64_t valid=0;
+    for(int i=0;i<TOMB_RENDER_NODES;i++){
+        const TombRenderNode *n=r->nodes+i;
+        if(n->tick!=tick)continue;
+        if(alpha>=1)memcpy(world[i],n->world,sizeof n->world);
+        else{
+            float local[16];blend(n->previous,n->current,alpha,local);
+            if(n->parent<0)memcpy(world[i],local,sizeof local);
+            else{
+                if(n->parent>=i || !(valid&(UINT64_C(1)<<n->parent)))continue;
+                multiply(world[n->parent],local,world[i]);
+            }
+        }
+        valid|=UINT64_C(1)<<i;
+    }
+    return valid;
+}

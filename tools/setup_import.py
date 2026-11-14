@@ -19,7 +19,7 @@ LEVELS = ['GYM', 'TITLE', 'CUT1', 'CUT2', 'CUT3', 'CUT4', 'LEVEL1', 'LEVEL2',
           'LEVEL8A', 'LEVEL8B', 'LEVEL8C', 'LEVEL10A', 'LEVEL10B', 'LEVEL10C']
 MOVIES = ['CAFE', 'CANYON', 'CORE', 'END', 'ESCAPE', 'LIFT', 'MANSION',
           'PRISON', 'PYRAMID', 'SNOW', 'VISION']
-PICTURES = ['TITLEH', 'END', 'CRED1', 'CRED2', 'CRED3']
+PICTURES = ['TITLEH', 'END', 'CRED1', 'CRED2', 'CRED3', 'EIDOSPC']
 RUNTIME_FILES = ['TombRaiderBeyond.exe', 'TRCustomImport.exe', 'openxr_loader.dll', 'OPENXR-LICENSE.txt', 'SDL3.dll', 'SDL3-LICENSE.txt']
 
 
@@ -125,6 +125,12 @@ class Image(Disc):
 
 
 def cue_tracks(cue, ps1=False):
+    return parse_cue_tracks(cue, 57 if ps1 else 10,
+                            ('MODE2/2352',) if ps1 else ('MODE1/2352', 'MODE1/2048'))
+
+
+def parse_cue_tracks(cue, track_count, data_modes):
+    """Shared CUE reader; callers supply their game's disc layout policy."""
     tracks, binary, current = [], None, None
     for line in cue.read_text(encoding='utf-8-sig').splitlines():
         line = line.strip()
@@ -151,9 +157,9 @@ def cue_tracks(cue, ps1=False):
             continue
         else:
             raise ValueError(f'Unsupported CUE directive: {line}')
-    if [t['number'] for t in tracks] != list(range(1, 58 if ps1 else 11)):
+    if [t['number'] for t in tracks] != list(range(1, track_count + 1)):
         raise ValueError('Unexpected Tomb Raider disc track layout.')
-    if tracks[0]['kind'] not in (('MODE2/2352',) if ps1 else ('MODE1/2352', 'MODE1/2048')):
+    if tracks[0]['kind'] not in data_modes:
         raise ValueError('The disc data-track type does not match the selected source.')
     for i, track in enumerate(tracks):
         if 1 not in track['indexes'] or (i and track['kind'] != 'AUDIO'):

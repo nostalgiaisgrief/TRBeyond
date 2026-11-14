@@ -1,4 +1,5 @@
 #include "preview_custom.h"
+#include "detail_options.h"
 static void frontend_detail_notice(int row){
  const char *names[]={"","Resolution","Force 4:3","Framerate Limit","Colour Depth","Texture Filtering","Draw Distance","Water Style"};
  const char *value=row==1?(settings_detail==2?"Full":settings_detail==1?"DOS High":settings_detail==3?"PS1":"DOS Low"):
@@ -77,7 +78,7 @@ static const char *frontend_name(int id){switch(id){case 71:case 81:return "Game
 /* Title always offers Autosave; gameplay offers it only while enabled. */
 static int frontend_save_blocked(void){return !title_mode && (play.gameplay_options&TOMB_SAVE_CRYSTALS) && crystal_pending<0;}
 static int frontend_autosave_visible(int page){return page==0 && (title_mode || ((play.gameplay_options&TOMB_AUTOSAVE) && !(play.gameplay_options&TOMB_SAVE_CRYSTALS)));}
-static int frontend_slot_count(int page){return 16+!!frontend_autosave_visible(page);}
+static int frontend_slot_count(int page){return TOMB_MANUAL_SLOTS+!!frontend_autosave_visible(page);}
 static int frontend_slot(int page,int row){return frontend_autosave_visible(page)?(row==0?16:row-1):row;}
 static int slot_memory_ready,slot_remembered,slot_manual;
 static void refresh_slots(void){
@@ -129,7 +130,7 @@ static int frontend_source_apply(void){
  source_selected=source_pending;
  if(!frontend_assets()){
   frontend_free();title_level=old_level;title_visual=old_visual;title_tiles=old_tiles;title_font_tiles=old_font;title_backdrop=old_backdrop;
-  source_selected=source_pending=previous;music_pending=music_selected;fmv_pending=fmv_selected;settings_preset=-1;strcpy(menu_error,"Could not load source");return 0;
+  source_selected=source_pending=previous;music_pending=music_selected;fmv_pending=fmv_selected;settings_source_preset=-1;strcpy(menu_error,"Could not load source");return 0;
  }
  if(old_visual){glDeleteTextures((GLsizei)(old_visual->tile_count*2+2),old_tiles);glDeleteTextures((GLsizei)old_visual->tile_count,old_font);}
  free(old_tiles);free(old_font);tomb_visual_free(old_visual);tomb_level_free(old_level);glDeleteTextures(1,&old_backdrop);
@@ -337,7 +338,7 @@ static int frontend_input(unsigned *input){
   if(*input&TOMB_RING_SELECT){tomb_ring_finish_item(r,73);*input=0;}
  }
  else if(i->object>=95 && i->object<=97){
-  int rows=i->object==95?(title_mode?11:7):i->object==96?2:13;
+  int rows=i->object==95?(title_mode?12:8):i->object==96?2:13;
   if(i->object==95){if(*input&16 && option_row>0)option_row--;if(*input&32 && option_row<rows-1)option_row++;}
   else if(i->object==97){
    if(option_row<0){if(*input&(TOMB_RING_LEFT|TOMB_RING_RIGHT))controls_page=(controls_page+((*input&TOMB_RING_RIGHT)?1:3))%4;if(*input&32)option_row=0;}
@@ -349,19 +350,21 @@ static int frontend_input(unsigned *input){
    int forward=(*input&TOMB_RING_RIGHT)!=0;
    int row=option_row+(title_mode?0:1);
    if(row==0){
+    settings_source_preset=settings_source_preset<0?0:(settings_source_preset+(forward?1:2))%3;
+    int level_preferred=settings_source_preset==2?0:1;
+    int media_preferred=settings_source_preset==1?1:0;
+    source_pending=source_choose(source_available,level_preferred);
+    music_pending=source_choose_media(music_available,settings_source_preset==0?3:media_preferred);
+    fmv_pending=source_choose_media(fmv_available,media_preferred);
+   }else if(row==1){
     settings_preset=settings_preset<0?0:(settings_preset+(forward?1:3))%4;
     settings_apply_preset(settings_preset);
-    int level_preferred=settings_preset==3?0:1;
-    int media_preferred=settings_preset==0 || settings_preset==3?0:1;
-    source_pending=source_choose(source_available,level_preferred);
-    music_pending=source_choose_media(music_available,settings_preset==0?3:media_preferred);
-    fmv_pending=source_choose_media(fmv_available,media_preferred);
-   }else{
-    if(row>=1 && row<=7)frontend_detail_cycle(row,forward);
-    else if(row==8)source_pending=source_cycle(source_pending,forward?1:-1);
-    else if(row==9)music_pending=source_cycle_mask(music_pending,forward?1:-1,music_available);
-    else if(row==10)fmv_pending=source_cycle_mask(fmv_pending,forward?1:-1,fmv_available);
-    settings_preset=-1;
+   }else if(row<=8)frontend_detail_cycle(row-1,forward);
+   else{
+    if(row==9)source_pending=source_cycle(source_pending,forward?1:-1);
+    else if(row==10)music_pending=source_cycle_mask(music_pending,forward?1:-1,music_available);
+    else if(row==11)fmv_pending=source_cycle_mask(fmv_pending,forward?1:-1,fmv_available);
+    settings_source_preset=-1;
    }
   }
   if(i->object==96){int *v=option_row?&settings_sound:&settings_music;if(*input&TOMB_RING_LEFT && *v>0)--*v;if(*input&TOMB_RING_RIGHT && *v<10)++*v;}
@@ -499,26 +502,7 @@ static void frontend_key_name(unsigned key,char out[40]) {
  LONG scan=(LONG)(MapVirtualKeyA(key,MAPVK_VK_TO_VSC)<<16);if(key>=VK_PRIOR && key<=VK_DOWN)scan|=1L<<24;
  if(!GetKeyNameTextA(scan,out,40))snprintf(out,40,"%u",key);
 }
-/* Only TR1 currently has a runtime; disabled games cannot receive selection.
-   With one supported game, TR1 is also the valid last-game/style fallback. */
-static void frontend_game_selector(void){
- TombDialogEntry entries[32];tomb_dialog_layout(71,launcher_game,1,entries);
- for(int i=0;i<7;i++){
-  entries[i].flags=TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE;
-  entries[i].y+=250;
-  if(entries[i].panel_width)entries[i].panel_width=i==0?390:i==1?386:378;
- }
- entries[0].panel_height=40+18*5;
- frontend_entry(entries," ",0);frontend_entry(entries+1,"Select Game",0);
- for(int i=0;i<5;i++){
-  TombDialogEntry *entry=entries+i+2;
-  if(i==launcher_game)frontend_entry(entry,game_names[i],0);
-  else{
-   double scale=ui_scale();
-   text_aligned_tinted((float)(entry->x*scale),(float)(entry->y*scale),game_names[i],(unsigned)entry->flags,.35f);
-  }
- }
-}
+#include "new_game_options.h"
 static void frontend_overlay(void){
  TombRing *r=&inventory_ring;TombRingItem *i=r->items+r->current;
  if(r->motion.status!=8 || !r->ready)return;
@@ -528,7 +512,6 @@ static void frontend_overlay(void){
  }
  if(i->object==71){
   if(new_game_menu && new_game_menu<4){
-   static const char *modes[]={"Original","Third Person Shooter","First Person Shooter","Virtual Reality"};
    if(new_game_menu==3){frontend_gameplay_overlay(1,new_game_row);return;}
    int rows=new_game_menu==1?(menu_role?1:4):2;
    tomb_dialog_layout(71,new_game_row,1,entries);
@@ -536,8 +519,8 @@ static void frontend_overlay(void){
    frontend_entry(entries," ",0);frontend_entry(entries+1,new_game_menu==1?"Select Mode":new_game_menu==2?"Select Gameplay":"Customise Gameplay",0);
    for(int row=0;row<rows;row++){char text[100];
     entries[row+2]=(TombDialogEntry){0,-270+18*row,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM,row==new_game_row?360:0,16};
-    if(new_game_menu==1)snprintf(text,sizeof text,"%s",modes[row]);
-    else if(new_game_menu==2)snprintf(text,sizeof text,"%s",row?"Customise...":"Play with Defaults");
+    if(new_game_menu==1)snprintf(text,sizeof text,"%s",new_game_modes[row]);
+    else if(new_game_menu==2)snprintf(text,sizeof text,"%s",new_game_gameplay[row]);
     if(entries[row+2].panel_width)entries[row+2].panel_width=360;frontend_entry(entries+row+2,text,0);
    }if(menu_error[0])ui_text(0,-40,menu_error,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);return;
   }
@@ -588,10 +571,10 @@ static void frontend_overlay(void){
    if(first+10<frontend_slot_count(page))ui_text(0,-88,"]",TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
   }
  }else if(i->object==95 || i->object==96){
-  int detail=i->object==95,rows=detail?(title_mode?11:7):2;
+  int detail=i->object==95,rows=detail?(title_mode?12:8):2;
   tomb_dialog_layout(i->object,option_row,0,entries);
   if(detail){
-   int top=title_mode?-185:-127,spacing=26;
+   int top=title_mode?-198:-140,spacing=26;
    entries[0].panel_width=460;entries[0].panel_height=42+spacing*rows;
    entries[1].panel_width=456;entries[0].y=top;entries[1].y=top+2;
    for(int row=0;row<rows;row++){entries[row+2]=entries[2];entries[row+2].y=top+32+spacing*row;entries[row+2].panel_width=option_row==row?448:0;}
@@ -601,18 +584,18 @@ static void frontend_overlay(void){
    char line[96];int setting=row+(title_mode?0:1);
    if(!detail)snprintf(line,sizeof line,"%c %2d",row==0?'|':'}',row==0?settings_music:settings_sound);
    else {
-    static const char *labels[]={"Preset","Resolution","Force 4:3","Framerate Limit","Colour Depth","Texture Filtering","Draw Distance","Water Style","Level Source","Music and Speech Source","FMV Source"};
     const char *value="";
-    if(setting==0)value=settings_preset<0?"Custom":preset_names[settings_preset];
-    else if(setting==1)value=settings_detail==2?"Full":settings_detail==1?"DOS High":settings_detail==3?"PS1":"DOS Low";
-    else if(setting==2)value=settings_force43?"On":"Off";
-    else if(setting==3)value=settings_framerate==0?"Off":settings_framerate==1?"60":"30";
-    else if(setting==4)value=settings_full_colour?"Full Colour":"256 Colours";
-    else if(setting==5)value=settings_texture_filtering?"On":"Off";
-    else if(setting==6)value=draw_distance_names[settings_draw_distance];
-    else if(setting==7)value=visual_style_names[settings_water_style];
-    else {unsigned available=setting==8?source_available:setting==9?music_available:fmv_available;value=setting==9 && music_pending==3?"PS1+DOS":available?source_names[setting==8?source_pending:setting==9?music_pending:fmv_pending]:"Unavailable";}
-    snprintf(line,sizeof line,"%s: %s",labels[setting],value);
+    if(setting==0)value=settings_source_preset<0?"Custom":source_preset_names[settings_source_preset];
+    else if(setting==1)value=settings_preset<0?"Custom":preset_names[settings_preset];
+    else if(setting==2)value=settings_detail==2?"Full":settings_detail==1?"DOS High":settings_detail==3?"PS1":"DOS Low";
+    else if(setting==3)value=settings_force43?"On":"Off";
+    else if(setting==4)value=settings_framerate==0?"Off":settings_framerate==1?"60":"30";
+    else if(setting==5)value=settings_full_colour?"Full Colour":"256 Colours";
+    else if(setting==6)value=settings_texture_filtering?"On":"Off";
+    else if(setting==7)value=draw_distance_names[settings_draw_distance];
+    else if(setting==8)value=visual_style_names[settings_water_style];
+    else {unsigned available=setting==9?source_available:setting==10?music_available:fmv_available;value=setting==10 && music_pending==3?"PS1+DOS":available?source_names[setting==9?source_pending:setting==10?music_pending:fmv_pending]:"Unavailable";}
+    snprintf(line,sizeof line,"%s: %s",detail_option_labels[setting],value);
    }
    frontend_entry(entries+row+2,line,0);
   }

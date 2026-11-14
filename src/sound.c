@@ -146,7 +146,7 @@ static double value(const TombSoundSample *s,size_t frame,unsigned channel) {
     const unsigned char *p=s->pcm+(frame*s->channels+(s->channels==1?0:channel))*s->bits/8;
     return s->bits==8?((int)p[0]-128)*256:(int16_t)word(p);
 }
-void tomb_sound_mix(TombSoundMixer *m,int16_t *out,size_t frames) {
+void tomb_sound_mix_scaled(TombSoundMixer *m,int16_t *out,size_t frames,double gain) {
     for(size_t f=0;f<frames;f++) {
         double sum[2]={0,0};
         for(int i=0;i<TOMB_SOUND_CHANNELS;i++) {
@@ -159,6 +159,7 @@ void tomb_sound_mix(TombSoundMixer *m,int16_t *out,size_t frames) {
             v->position+=(double)s->rate*v->pitch/(100*TOMB_SOUND_RATE);
         }
         /* Preserve recorded stereo for music; effects use corrected symmetric gains. Modern mix headroom. */
-        for(int c=0;c<2;c++){double v=sum[c]*.65;if(v>32767)v=32767;if(v<-32768)v=-32768;out[f*2+c]=(int16_t)v;}
+        for(int c=0;c<2;c++){double v=sum[c]*gain;if(v>32767)v=32767;if(v<-32768)v=-32768;out[f*2+c]=(int16_t)v;}
     }
 }
+void tomb_sound_mix(TombSoundMixer *m,int16_t *out,size_t frames){tomb_sound_mix_scaled(m,out,frames,.65);}

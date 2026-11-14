@@ -18,4 +18,7 @@ typedef struct TombRenderTrack {
 void tomb_render_begin(TombRenderTrack *,uint64_t tick,const float origin[3],int room);
 void tomb_render_record(TombRenderTrack *,uint64_t tick,int node,int parent,int identity,const float world[16]);
 int tomb_render_sample(const TombRenderTrack *,uint64_t tick,int node,int identity,double alpha,float world[16]);
+/* Sample a hierarchy once, parent before child. Returns a valid-node mask;
+   callers still check mesh identities before using the sampled matrices. */
+uint64_t tomb_render_sample_all(const TombRenderTrack *,uint64_t tick,double alpha,float world[TOMB_RENDER_NODES][16]);
 #endif
