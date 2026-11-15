@@ -256,12 +256,12 @@ void tr2_bubble(Tr2World *w,const int p[3],int room){
    object 249, distinct from the diver's effect 245. */
 int tr2_player_harpoon_fire(const Tr2Level *l,Tr2World *w,Tr2Actor *a){
     if(!w->hazards || !w->combat || w->combat->ammo[7]<=0)return 0;
-    const uint8_t *m=tr2_model(l,249);if(!m)return 0;
+    const Tr2Level *assets=tr2_weapon_assets(l,249);const uint8_t *m=tr2_model(assets,249);if(!m)return 0;
     for(int i=0;i<TR2_MAX_DARTS;i++)if(!w->hazards->darts[i].active){
         int p[3]={-2,373,77};if(!tr2_weapon_joint(l,a,w->combat,10,p))return 0;
         Tr2Object *o=w->hazards->darts+i;memset(o,0,sizeof *o);o->id=249;o->active=o->status=1;
         Tr2Actor *bolt=&o->pose;bolt->x=p[0];bolt->y=p[1];bolt->z=p[2];bolt->room=a->room;
-        tr2_set_animation(l,bolt,tr2_u16(m+16),0);
+        tr2_set_animation(assets,bolt,tr2_u16(m+16),0);
         bolt->pitch=tr2_word(a->pitch+w->combat->arms[0].aim.pitch);bolt->yaw=tr2_word(a->yaw+w->combat->arms[0].aim.yaw);
         if((uint32_t)w->combat->target<w->count){
             Tr2Actor *target=&w->objects[w->combat->target].pose;int bounds[6];
@@ -306,12 +306,12 @@ void tr2_player_harpoon_tick(const Tr2Level *l,Tr2World *w,Tr2Object *o){
 }
 int tr2_grenade_fire(const Tr2Level *l,Tr2World *w,Tr2Actor *a){
     if(!w->hazards || !w->combat || w->combat->ammo[6]<=0)return 0;
-    const uint8_t *m=tr2_model(l,248);if(!m)return 0;
+    const Tr2Level *assets=tr2_weapon_assets(l,248);const uint8_t *m=tr2_model(assets,248);if(!m)return 0;
     for(int i=0;i<TR2_MAX_DARTS;i++)if(!w->hazards->darts[i].active){
         int p[3]={-2,373,77};if(!tr2_weapon_joint(l,a,w->combat,10,p))return 0;
         Tr2Object *o=w->hazards->darts+i;memset(o,0,sizeof *o);o->id=248;o->active=o->status=1;
         Tr2Actor *g=&o->pose;g->x=p[0];g->y=p[1];g->z=p[2];g->room=a->room;
-        tr2_set_animation(l,g,tr2_u16(m+16),0);g->pitch=tr2_word(a->pitch+w->combat->arms[0].aim.pitch);g->yaw=tr2_word(a->yaw+w->combat->arms[0].aim.yaw);g->speed=200;
+        tr2_set_animation(assets,g,tr2_u16(m+16),0);g->pitch=tr2_word(a->pitch+w->combat->arms[0].aim.pitch);g->yaw=tr2_word(a->yaw+w->combat->arms[0].aim.yaw);g->speed=200;
         w->combat->ammo[6]--;w->combat->shots++;return 1;
     }
     return 0;

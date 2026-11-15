@@ -190,7 +190,7 @@ static int binding_wait;
 static void mouse_release(void);
 static void mouse_inventory_begin(void);
 static void inventory_begin(void);
-static int crystal_pending=-1,crystal_held,crystal_render;
+static int crystal_pending=-1,crystal_held,crystal_render,level_start_save;
 static int passport_shortcut,passport_save;
 static void refresh_slots(void);
 static int backdrop_dirty,backdrop_shade;
@@ -597,7 +597,7 @@ static void audio_route(const wchar_t *endpoint){
 #include "preview_xr.h"
 static int autosave_switch_held(size_t index){return play.shooter.mode==TOMB_MODE_VR && (vr.hands[0].lever==(int)index || vr.hands[1].lever==(int)index);}
 static int vr_hand_ring(void){return inventory_open && vr.menu_open && !title_mode && !death_menu && !objects.progress->complete;}
-static int inventory_pauses(void){return inventory_open && !coop_connected && (crystal_pending>=0 || !vr_hand_ring());}
+static int inventory_pauses(void){return inventory_open && !coop_connected && (crystal_pending>=0 || level_start_save || !vr_hand_ring());}
 #include "preview_lighting.h"
 #include "preview_interpolation.h"
 /* PS1 object 83 samples the display buffer as a 16-bit texture page.
@@ -1186,7 +1186,7 @@ static int make_tiles(void) {
     return 1;
 }
 static int load_game_level(int next_number,int carry,const char *saved) {
-    crystal_pending=-1;crystal_held=0;
+    crystal_pending=-1;crystal_held=0;level_start_save=0;
     xr.reset=1;
     free(cinematic_pixels);cinematic_pixels=NULL;
     if(next_number<0 || next_number>=LEVEL_CHOICE_COUNT)return 0;
@@ -1208,7 +1208,7 @@ static int load_game_level(int next_number,int carry,const char *saved) {
     if(saved && !tomb_save_read(saved,next_number,&player,&world,&saved_camera,&saved_baseline)){
         tomb_objects_free(&world);free(rects);tomb_visual_free(view);tomb_level_free(next);strcpy(menu_error,"Could not load this save");return 0;
     }
-    uint32_t carried_options=carry?play.gameplay_options:0;
+    uint32_t carried_options=carry?(play.gameplay_options&~TOMB_START_WEAPON_FLAGS):0;
     int carried_mode=carry?play.shooter.mode:0;
     int carried_weapon=play.weapon_type,carried_sidearm=play.sidearm_type;
     TombInventory carried=carry?play.inventory:player.inventory;carried.pickups=carried.ticks=0;carried.pickup_ticks=0;carried.last_pickup=-1;memset(carried.quest,0,sizeof carried.quest);carried.counts[8]=0;carried.chosen=-1;
@@ -1262,20 +1262,32 @@ static int load_game_level(int next_number,int carry,const char *saved) {
         if(movie)play_movie(movie,0);
     }autosave_reset(!saved);if(custom_campaign_id)custom_log_error(custom_campaign_id,"Entered gameplay");return 1;
 }
+static void open_save_passport(int crystal,int between_levels){
+    inventory_begin();
+    crystal_pending=crystal;level_start_save=between_levels;
+    inventory_keys=inventory_key_only=0;options_ring=1;
+    tomb_ring_init_options(&inventory_ring,2);ring_previous=inventory_ring;
+    passport_shortcut=2;passport_save=1;accumulator=0;
+}
+static int enter_next_level(int number){
+    if(!load_game_level(number,1,NULL))return 0;
+    if((play.gameplay_options&TOMB_SAVE_CRYSTALS) && !coop_mode)open_save_passport(-1,1);
+    return 1;
+}
 static int load_next_level(void){
  if(custom_campaign_id){frontend_title();return 1;}
  if(campaign_selected==CAMPAIGN_COMBINED && level_number>0){
-  if(level_number==15)return load_game_level(18,1,NULL);
-  if(level_number==19){if(!front_test && !transition_test)play_movie("END",0);return load_game_level(16,1,NULL);}
+  if(level_number==15)return enter_next_level(18);
+  if(level_number==19){if(!front_test && !transition_test)play_movie("END",0);return enter_next_level(16);}
   if(level_number==17){if(!front_test && !transition_test)play_ending(0);frontend_title();return 1;}
-  if(level_number>=UB_FIRST_LEVEL)return load_game_level(level_number+1,1,NULL);
+  if(level_number>=UB_FIRST_LEVEL)return enter_next_level(level_number+1);
  }
  if(level_number>=UB_FIRST_LEVEL){
-  if(level_number<UB_LAST_LEVEL)return load_game_level(level_number+1,1,NULL);
+  if(level_number<UB_LAST_LEVEL)return enter_next_level(level_number+1);
   if(!front_test && !transition_test)play_ending(0);
   frontend_title();return 1;
  }
- if(level_number==13 && !front_test && !transition_test)play_cutscene_sequence(0,3);if(level_number==15 && !front_test && !transition_test)play_ending(0);if(level_number<1 || level_number+1>=UB_FIRST_LEVEL){frontend_title();return 1;}return load_game_level(level_number+1,1,NULL);
+ if(level_number==13 && !front_test && !transition_test)play_cutscene_sequence(0,3);if(level_number==15 && !front_test && !transition_test)play_ending(0);if(level_number<1 || level_number+1>=UB_FIRST_LEVEL){frontend_title();return 1;}return enter_next_level(level_number+1);
 }
 /* Menu effects have their own output so pausing world audio cannot mute them.
    DOS passes a null position and environment 2 for these SoundEffect calls. */
@@ -1286,7 +1298,7 @@ static void inventory_sound(void) {
     tomb_sound_output_event(ring_sound_output,&event,0,origin);
 }
 static void inventory_begin(void) {
-    crystal_pending=-1;
+    crystal_pending=-1;level_start_save=0;
     vr.menu_open=play.shooter.mode==TOMB_MODE_VR && !title_mode && !death_menu;
     mouse_inventory_begin();
     backdrop_dirty=1;backdrop_shade=32;refresh_slots();
@@ -1374,9 +1386,7 @@ static int crystal_poll(void){
     if(!action || crystal_held || inventory_open || title_mode || cinema_mode)return 0;
     int item=tomb_save_crystal_find(&play,&objects);if(item<0)return 0;
     crystal_held=1;
-    inventory_begin();crystal_pending=item;inventory_keys=inventory_key_only=0;options_ring=1;
-    tomb_ring_init_options(&inventory_ring,2);ring_previous=inventory_ring;
-    passport_shortcut=2;passport_save=1;accumulator=0;return 1;
+    open_save_passport(item,0);return 1;
 }
 static void font_glyph(void *user,const TombTextGlyph *g) {
     (void)user;int sprite=tomb_hazard_sprite(visual,190,g->glyph,NULL);if(sprite<0)return;

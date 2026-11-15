@@ -41,9 +41,14 @@ static const char *resolution_labels[]={"Full","800 x 600","640 x 480","384 x 24
 static int home_session,home_playing,home_available,home_keys[256],pending_transition;
 static void menu_reset(void);
 static double title_angle,ring_open,ring_fraction;
-static RingItem ring_items[265];
+static RingItem ring_items[265],previous_items[265];
+static double previous_radius,previous_spin,previous_open,previous_angle,previous_tilt;
+static int previous_ring,ring_history;
 /* Home exposes the stopwatch; options share the title item renderer. */
 static int game_ring,ring_switch,switch_pitch,ring_memory[3],flare_pick;
+static double ring_lerp(double a,double b){
+    return ring_history && previous_ring==game_ring?a+ring_fraction*(b-a):b;
+}
 enum { TITLE_ITEMS=5 };
 /* Detail Levels is a user-requested addition to the original four-item ring. */
 static const int title_ids[TITLE_ITEMS]={133,155,153,154,122};
@@ -62,13 +67,18 @@ static void inventory_refresh(void){
  const Tr2World *w=tr2_level_world();memset(owned_count,0,sizeof owned_count);if(!w->inventory)return;
  for(unsigned i=0;i<sizeof order/sizeof *order;i++){
   int id=order[i],keys=id>=174;
-  if((id==121 || w->inventory->count[id]) && tr2_model(w->level,pickup_model(id)))ring_items_owned[keys][owned_count[keys]++]=id;
-  if(id>=136 && id<=141 && w->inventory->count[id+7] && tr2_model(w->level,pickup_model(id+7)))ring_items_owned[0][owned_count[0]++]=id+7;
+  if((id==121 || w->inventory->count[id]) && tr2_model(tr2_ring_assets(pickup_model(id),NULL),pickup_model(id)))ring_items_owned[keys][owned_count[keys]++]=id;
+  if(id>=136 && id<=141 && w->inventory->count[id+7] && tr2_model(tr2_ring_assets(pickup_model(id+7),NULL),pickup_model(id+7)))ring_items_owned[0][owned_count[0]++]=id+7;
  }
 }
-static int ring_count(void){if(death_passport)return 3;return home_session?(game_ring==OPTION_RING?4+(current_level!=0 || tr2_home_campaign_exit()):owned_count[game_ring==KEY_RING]):TITLE_ITEMS;}
+static int ring_count(void){if(death_passport)return 3;return home_session?(game_ring==OPTION_RING?TITLE_ITEMS:owned_count[game_ring==KEY_RING]):TITLE_ITEMS;}
 static int ring_pickup(int index){return ring_items_owned[game_ring==KEY_RING][index];}
 static int ring_id(int index){if(death_passport)return title_ids[index==2?3:index];return home_session && game_ring!=OPTION_RING?pickup_model(ring_pickup(index)):title_ids[index];}
+/* Tomb2.exe 42285d dispatches the selection cue by inventory model. */
+static int ring_selection_sound(int id){
+    if(id>=157 && id<=163)return 114;
+    return 111;
+}
 static int ring_closing(void){return ring_switch || ring_exit==1 || (ring_exit>=4 && !return_item);}
 static void asset_path(char path[MAX_PATH],const char *relative){snprintf(path,MAX_PATH,"%s/%s",asset_root,relative);}
 static FILE *asset_open(const char *relative){char path[MAX_PATH];asset_path(path,relative);return fopen(path,"rb");}
@@ -112,7 +122,7 @@ static void mesh_geometry(uint32_t index,int depth){
     mesh_faces(&p,vertices,vertices_count,4,1,lights,normal_data,depth);mesh_faces(&p,vertices,vertices_count,3,1,lights,normal_data,depth);
     glPopAttrib();
 }
-static void rotate_frame(const uint8_t **cursor,const uint8_t *end){
+static void frame_angles(const uint8_t **cursor,const uint8_t *end,int angles[3]){
     if(*cursor+2>end)return;
     uint16_t a=tr2_u16(*cursor);*cursor+=2;unsigned x=0,y=0,z=0;
     switch(a>>14){
@@ -123,9 +133,15 @@ static void rotate_frame(const uint8_t **cursor,const uint8_t *end){
         if(*cursor+2>end)return;
         {uint16_t b=tr2_u16(*cursor);*cursor+=2;x=(a>>4)&1023;y=((a&15)<<6)|(b>>10);z=b&1023;}break;
     }
-    glRotatef(y*(360.f/1024),0,1,0);glRotatef(x*(360.f/1024),1,0,0);glRotatef(z*(360.f/1024),0,0,1);
+    angles[0]=x;angles[1]=y;angles[2]=z;
 }
-static void model(uint32_t id,int frame_index,double y,double z,double yaw,uint64_t mask,int pitch){
+static void ring_joint(const uint8_t **frame,const uint8_t **next,const uint8_t *end,double t){
+    int a[3]={0},b[3]={0};frame_angles(frame,end,a);frame_angles(next,end,b);
+    double angle[3];
+    for(int i=0;i<3;i++)angle[i]=(a[i]+t*(((b[i]-a[i]+1536)%1024)-512))*360/1024;
+    glRotated(angle[1],0,1,0);glRotated(angle[0],1,0,0);glRotated(angle[2],0,0,1);
+}
+static void model(uint32_t id,double frame_index,double y,double z,double yaw,uint64_t mask,double pitch){
  const uint8_t *m=tr2_model(level,id);if(!m)return;
  unsigned count=tr2_u16(m+4),start=tr2_u16(m+6),anim=tr2_u16(m+16);
  if(!count || count>64 || anim>=level->animations.count)return;
@@ -134,13 +150,18 @@ static void model(uint32_t id,int frame_index,double y,double z,double yaw,uint6
  if(offset+18>level->frames.count*2)return;
  const uint8_t *frame=level->frames.data+offset,*end=level->frames.data+level->frames.count*2;
  glPushMatrix();glTranslated(0,y,z);glRotated(yaw,0,1,0);glRotated(pitch*(360.0/65536),1,0,0);
- glTranslatef(tr2_i16(frame+12),tr2_i16(frame+14),tr2_i16(frame+16));frame+=18;
- int stack=0;rotate_frame(&frame,end);if(mask&1)mesh_geometry(start,0);
+ double t=frame_index-floor(frame_index);
+ const uint8_t *next=frame;
+ if(t>0 && (size_t)(end-frame)>=a[5]*2u+18)next+=a[5]*2;
+ double origin[3];
+ for(int i=0;i<3;i++){int p=tr2_i16(frame+12+2*i);origin[i]=p+t*(tr2_i16(next+12+2*i)-p);}
+ glTranslated(origin[0],origin[1],origin[2]);frame+=18;next+=18;
+ int stack=0;ring_joint(&frame,&next,end,t);if(mask&1)mesh_geometry(start,0);
  unsigned tree=tr2_u32(m+8);
  for(unsigned i=1;i<count;i++){
   const uint8_t *bone=level->trees.data+(tree+(i-1)*4)*4;unsigned flags=tr2_u32(bone);
   if((flags&1) && stack){glPopMatrix();stack--;}if(flags&2){glPushMatrix();stack++;}
-  glTranslatef((float)tr2_i32(bone+4),(float)tr2_i32(bone+8),(float)tr2_i32(bone+12));rotate_frame(&frame,end);
+  glTranslatef((float)tr2_i32(bone+4),(float)tr2_i32(bone+8),(float)tr2_i32(bone+12));ring_joint(&frame,&next,end,t);
   if(id==121 && count-i>=2 && count-i<=4)glRotatef(tr2_stopwatch_hand(tr2_home_stopwatch_ticks(),(int)(count-i))*(360.f/65536),0,0,1);
   if(mask&(1ull<<i))mesh_geometry(start+i,0);
  }
@@ -229,15 +250,20 @@ static void title_text(float y,const char *text,int selected){menu_text_at(320,y
 static int ring_motion_tick(void){return (int)lround((ring_closing()?1-ring_open:ring_open)*(switch_pitch?24:32));}
 static int ring_radius(void){return ring_motion_value(ring_closing()?688:0,ring_closing()?0:688,ring_motion_tick(),switch_pitch?24:32);}
 static double ring_spin(void){return ring_motion_value(ring_closing()?0:32768,ring_closing()?-32768:0,ring_motion_tick(),switch_pitch?24:32)*(360.0/65536);}
+static void remember_ring(void){
+    previous_radius=ring_radius();previous_spin=ring_spin();previous_open=ring_open;
+    previous_angle=title_angle;previous_ring=game_ring;previous_tilt=switch_pitch*(1-ring_open);
+    memcpy(previous_items,ring_items,sizeof ring_items);ring_history=1;
+}
 static void menu_projection(void){
     glEnable(GL_DEPTH_TEST);glClear(GL_DEPTH_BUFFER_BIT);glDisable(GL_CULL_FACE);glEnable(GL_ALPHA_TEST);glAlphaFunc(GL_GREATER,.5f);
     glMatrixMode(GL_PROJECTION);glLoadIdentity();/* EXE 4220dd/424fe0/4250f0: FOV 80, radius 688, camera (0,-256,1286). */
     double edge=128*tan((14560.0/65536)*PI);glFrustum(-edge,edge,-edge*.75,edge*.75,128,8192);
     glMatrixMode(GL_MODELVIEW);glLoadIdentity();
-    double camera_y=switch_pitch?-256:-1536+1280*ring_open;
-    double pitch=-atan2(-96-camera_y,598)+(home_session?0:1024.0*2*PI/65536)+switch_pitch*(1-ring_open)*PI/4,cp=cos(pitch),sp=sin(pitch);
+    double camera_y=switch_pitch?-256:-1536+1280*ring_lerp(previous_open,ring_open);
+    double pitch=-atan2(-96-camera_y,598)+(home_session?0:1024.0*2*PI/65536)+ring_lerp(previous_tilt,switch_pitch*(1-ring_open))*PI/4,cp=cos(pitch),sp=sin(pitch);
     GLfloat view[16]={-1,0,0,0, 0,(GLfloat)-cp,(GLfloat)sp,0, 0,(GLfloat)sp,(GLfloat)cp,0, 0,0,0,1};
-    glMultMatrixf(view);glTranslated(0,-camera_y,-598-ring_radius());
+    glMultMatrixf(view);glTranslated(0,-camera_y,-598-ring_lerp(previous_radius,ring_radius()));
     for(int i=0;i<8;i++)glDisable(GL_LIGHT0+i);
     /* Root ring light (-1536,256,1024), divider24576 (425150). */
     for(int i=0;i<2;i++){float sign=i?1.f:-1.f;GLfloat color[4]={sign*2/3,sign*2/3,sign*2/3,1},direction[4]={1536*sign,-256*sign,-1024*sign,0};glLightfv(GL_LIGHT0+i,GL_DIFFUSE,color);glLightfv(GL_LIGHT0+i,GL_POSITION,direction);glEnable(GL_LIGHT0+i);}
@@ -263,19 +289,26 @@ static void inventory_background(void){
   glBegin(GL_QUADS);for(int i=0;i<4;i++){float shade=inventory_background_shade(x[i],y[i],width,height)/255.f;glColor3f(shade,shade,shade);glTexCoord2f(u[i],v[i]);glVertex2f(x[i]*640.f/width,y[i]*480.f/height);}glEnd();
  }
 }
+static double display_item_pose(const RingItem *prior,const RingItem *now,int start,int end){
+    return ring_lerp(item_pose(prior,start,end),item_pose(now,start,end));
+}
 static void draw_ring_item(int id,double angle){
     const MenuDescriptor *d=menu_descriptor(id);if(!d)return;
     const RingItem *item=ring_items+id;
+    const RingItem *prior=previous_items+id;
     int passport=id==133 && item->lift && !item->closed;
     int selected=fabs(remainder(angle,2*PI))<1e-6 && !turning;
     menu_mesh_shade=title_disabled(id)?6656:selected?4096:5120;float base=(8191-menu_mesh_shade)/4096.f;GLfloat ambient[4]={base,base,base,1};glLightModelfv(GL_LIGHT_MODEL_AMBIENT,ambient);
     glPushMatrix();
-    glRotated(-90+angle*180/PI+ring_spin(),0,1,0);
-    glTranslated(ring_radius(),0,0);glRotatef(90,0,1,0);
-    glRotated(item_pose(item,0,d->point_pitch)*(360.0/65536),1,0,0);
-    model(passport?120u:(unsigned)id,item->frame,item_pose(item,0,d->y),item_pose(item,0,d->z),
-          item->yaw*(360.0/65536),passport?passport_mask(item->frame):d->mask,
-          item_pose(item,d->pitch,d->selected_pitch));
+    angle+=ring_lerp(remainder(title_angle-previous_angle,2*PI),0);
+    glRotated(-90+angle*180/PI+ring_lerp(previous_spin,ring_spin()),0,1,0);
+    glTranslated(ring_lerp(previous_radius,ring_radius()),0,0);glRotatef(90,0,1,0);
+    glRotated(display_item_pose(prior,item,0,d->point_pitch)*(360.0/65536),1,0,0);
+    double frame=ring_lerp(prior->display_frame,item->display_frame);
+    if(id==133 && !passport)frame=0;
+    model(passport?120u:(unsigned)id,frame,display_item_pose(prior,item,0,d->y),display_item_pose(prior,item,0,d->z),
+          (item->yaw+ring_lerp((int16_t)(prior->yaw-item->yaw),0))*(360.0/65536),passport?passport_mask((int)floor(frame+.5)):d->mask,
+          display_item_pose(prior,item,d->pitch,d->selected_pitch));
     glPopMatrix();menu_mesh_shade=0;
 }
 static const int control_defaults[14]={VK_UP,VK_DOWN,VK_LEFT,VK_RIGHT,VK_DELETE,VK_NEXT,VK_SHIFT,VK_MENU,VK_CONTROL,VK_SPACE,VK_OEM_2,VK_NUMPAD0,VK_END,VK_ESCAPE};

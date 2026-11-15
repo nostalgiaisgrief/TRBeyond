@@ -76,12 +76,14 @@ static int pose_matrix(const Tr2Level *l,const Tr2Actor *a,int id,const Tr2Look 
         translate(&m,tr2_i32(translation+4),tr2_i32(translation+8),tr2_i32(translation+12));
         if(gun && ((gun->rifle_active && i>=8 && i<=13) || (gun->weapon==8 && i>=11 && i<=13))){
             int body=gun->weapon==8 && !gun->flare_control;const Tr2Actor *source=body?a:&gun->rifle;
-            const uint8_t *an=l->animations.data+source->control.animation*32;
+            const Tr2Level *assets=gun->rifle_active?tr2_weapon_assets(l,tr2_weapon_model(gun->weapon)):l;
+            const uint8_t *rend=assets->frames.data+assets->frames.count*2;
+            const uint8_t *an=assets->animations.data+source->control.animation*32;
             uint32_t off=tr2_u32(an)+(unsigned)((source->control.frame-tr2_i16(an+16))/(body?an[4]:1))*an[5]*2;
-            if(off+18>end-l->frames.data || f+2>end)return 0;
-            const uint8_t *rf=l->frames.data+off+18;
-            for(int j=0;j<i;j++){if(rf+4>end)return 0;rf+=(tr2_u16(rf)>>14)?2:4;}
-            f+=(tr2_u16(f)>>14)?2:4;if(!packed(&m,&rf,end))return 0;
+            if(off+18>assets->frames.count*2 || f+2>end)return 0;
+            const uint8_t *rf=assets->frames.data+off+18;
+            for(int j=0;j<i;j++){if(rf+4>rend)return 0;rf+=(tr2_u16(rf)>>14)?2:4;}
+            f+=(tr2_u16(f)>>14)?2:4;if(!packed(&m,&rf,rend))return 0;
         }else if(!packed(&m,&f,end))return 0;
         rotate(&m,(id==29 && i==15) || id==22?2:1,tr2_creature_joint_rotation(id,i,creature));
         if(gun && i==7 && !weapon_torso(l,a,gun,&m))return 0;

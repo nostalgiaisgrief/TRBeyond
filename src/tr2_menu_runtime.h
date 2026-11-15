@@ -8,6 +8,9 @@ enum NewGamePage { PASSPORT, CAMPAIGN, MODE, GAMEPLAY, STARTING_LEVEL, ENHANCEME
 static enum NewGamePage new_game_page;
 enum { CHEATS_PAGE=10, CLOSE_FOR_SKIP=8 };
 static int gameplay_row,enhancement_row;
+static unsigned char starting_weapons[7],launch_weapons[7];
+static int start_cheats;
+static const char *const gun_names[]={"Pistols","Shotgun","Automatic Pistols","Uzis","M16","Grenade Launcher","Harpoon Gun"};
 static unsigned selected_options,launch_options;
 static unsigned level_count;
 static char level_names[256][128],level_files[256][128];
@@ -321,15 +324,22 @@ static void new_game_input(int back,int up,int down,int sideways,int confirm){
   if(up || down)gameplay_row=clamp(gameplay_row+down-up,0,1);
   if(confirm){new_game_page=gameplay_row?ENHANCEMENTS:STARTING_LEVEL;menu_sound(111);}
  }else if(new_game_page==ENHANCEMENTS){
-  enhancement_row=clamp(enhancement_row+down-up,0,2);
-  if(enhancement_row==2 && confirm){new_game_page=STARTING_LEVEL;menu_sound(111);}
-  else if(enhancement_row<2 && (sideways || confirm)){selected_options^=enhancement_row?TR2_CONSISTENT_WEAPONS:TR2_AUTOSAVE;menu_sound(108);}
+  int last=start_cheats?7:2;
+  enhancement_row=clamp(enhancement_row+down-up,-1,last);
+  if(enhancement_row<0){if(sideways || confirm){start_cheats=!start_cheats;menu_sound(108);}return;}
+  if(start_cheats && enhancement_row<last && (sideways || confirm)){
+   unsigned char *choice=starting_weapons+enhancement_row;
+   *choice=(unsigned char)((*choice+(sideways<0?2:1))%3);menu_sound(108);return;
+  }
+  if(enhancement_row==last && confirm){new_game_page=STARTING_LEVEL;menu_sound(111);}
+  else if(!start_cheats && enhancement_row<2 && (sideways || confirm)){selected_options^=enhancement_row?TR2_CONSISTENT_WEAPONS:TR2_AUTOSAVE;menu_sound(108);}
  }else if(new_game_page==STARTING_LEVEL){
   int step=down-up;
   if(step)for(int i=selected_level+step;i>=0 && i<(int)level_count;i+=step){
    if(level_enabled(i)){selected_level=i;menu_sound(108);break;}
   }
   if(confirm && level_enabled(selected_level)){
+   if(gameplay_row)memcpy(launch_weapons,starting_weapons,sizeof launch_weapons);else memset(launch_weapons,0,sizeof launch_weapons);
    launch_options=gameplay_row?selected_options:0;launch_level=selected_level;launch_campaign_home=selected_level==0;new_game_page=PASSPORT;title_page=0;return_frame=0;
    return_item=1;ring_exit=3;ring_held_key=0;menu_sound(111);
   }
@@ -338,11 +348,14 @@ static void new_game_input(int back,int up,int down,int sideways,int confirm){
 static void new_game_draw(void){
  static const char *const campaigns[]={"Tomb Raider II","Golden Mask","Combined","Custom"};
  static const char *const headings[]={"","Select Campaign","Select Mode","Select Gameplay","Choose Starting Level","Enhancements"};
- int rows=new_game_page==ENHANCEMENTS?3:new_game_page==STARTING_LEVEL?(int)level_count:new_game_page==GAMEPLAY?2:4;
+ int rows=new_game_page==ENHANCEMENTS?(start_cheats?8:3):new_game_page==STARTING_LEVEL?(int)level_count:new_game_page==GAMEPLAY?2:4;
  int role=new_game_page==CAMPAIGN,visible=rows>20?20:rows;
  int top=(480-40-18*(visible+role))/2;
  menu_frame(level,textures,130,top,380,40+18*(visible+role),1);
- menu_frame(level,textures,132,top+2,376,20,1);title_text(top+18,headings[new_game_page],0);
+ menu_frame(level,textures,132,top+2,376,20,1);if(new_game_page==ENHANCEMENTS){
+  if(enhancement_row<0)menu_frame(level,textures,140,top+4,360,16,1);
+  title_text(top+18,start_cheats?"< Cheats >":"< Enhancements >",0);
+ }else title_text(top+18,headings[new_game_page],0);
  if(role)title_text(top+38,"Singleplayer",0);
  for(int row=0;row<visible;row++){
   int y=top+38+18*(row+role);
@@ -351,7 +364,8 @@ static void new_game_draw(void){
   const char *name=new_game_page==CAMPAIGN?campaigns[row]:new_game_page==MODE?new_game_modes[row]:new_game_page==GAMEPLAY?new_game_gameplay[row]:level_names[row];
   char option[48];
   if(new_game_page==ENHANCEMENTS){
-   if(row==2)name="Start Game";
+   if(row==(start_cheats?7:2))name="Start Game";
+   else if(start_cheats){static const char *const modes[]={"Default","On","Off"};snprintf(option,sizeof option,"Start with %s: %s",gun_names[row],modes[starting_weapons[row]]);name=option;}
    else{snprintf(option,sizeof option,"%s: %s",row?"Consistent Weapons":"Autosave",selected_options&(row?TR2_CONSISTENT_WEAPONS:TR2_AUTOSAVE)?"On":"Off");name=option;}
   }
   if(row==selected && enabled)menu_frame(level,textures,140,y-14,360,16,1);
@@ -366,6 +380,10 @@ static void title_key(int key){
  if(campaign_input(key))return;
  if(home_playing){
   if(tr2_home_dead()){if(key==VK_ESCAPE || key==VK_RETURN)tr2_home_death_input();for(int i=0;i<14;i++)if(control_matches(i,key))tr2_home_death_input();return;}
+  if(key>='1' && key<='7'){
+   static const int items[]={135,137,136,138,140,141,139};
+   tr2_quick_weapon(items[key-'1']);return;
+  }
   if(control_matches(13,key) || key==VK_ESCAPE){home_playing=0;tr2_audio_inventory(1);memset(home_keys,0,sizeof home_keys);menu_reset();scan_slots();tr2_audio_pause(0);menu_sound(111);}return;
  }
  if(item_busy())return;
@@ -376,7 +394,7 @@ static void title_key(int key){
   else if(title_choice==2 && confirm){title_page=0;return_frame=29;return_item=1;ring_exit=2;menu_sound(111);}
   return;
  }
- if(new_game_page){new_game_input(key==VK_ESCAPE || key==VK_DECIMAL,up,down,left || right,confirm);return;}
+ if(new_game_page){new_game_input(key==VK_ESCAPE || key==VK_DECIMAL,up,down,right-left,confirm);return;}
  if(key==VK_ESCAPE || key==VK_DECIMAL || (home_session && control_matches(13,key))){if(title_page){return_frame=title_page==1 && title_choice==2?29:0;title_page=0;return_item=1;ring_held_key=0;menu_sound(112);}else if(home_session){ring_exit=4;ring_held_key=0;}return;}
  if(!title_page){
   if(home_session && !lock_ring && (up || down)){
@@ -384,20 +402,23 @@ static void title_key(int key){
    if(next!=game_ring && (next!=KEY_RING || owned_count[1])){ring_memory[game_ring]=title_selection;ring_target=next;ring_switch=1;switch_pitch=up?1:-1;ring_held_key=0;menu_sound(112);return;}
   }
   if(left || right){if(ring_count()<2)return;title_selection=(title_selection+(right?ring_count()-1:1))%ring_count();turn_ticks=24;turning=1;ring_held_key=key;menu_sound(108);}
-  else if(confirm && !title_disabled(ring_id(title_selection))){title_choice=0;title_page=ring_id(title_selection)==153?7:ring_id(title_selection)==121?8:home_session && game_ring!=OPTION_RING?9:title_selection==0?1:title_selection==1?4:title_selection==4?(home_session?CHEATS_PAGE:5):3;menu_sound(111);}
+  else if(confirm && !title_disabled(ring_id(title_selection))){title_choice=0;title_page=ring_id(title_selection)==153?7:ring_id(title_selection)==121?8:home_session && game_ring!=OPTION_RING?9:title_selection==0?1:title_selection==1?4:title_selection==4?(home_session?CHEATS_PAGE:5):3;if(title_page==CHEATS_PAGE && !current_level && !tr2_home_campaign_exit())title_choice=1;menu_sound(ring_selection_sound(ring_id(title_selection)));}
  }else if(title_page==1){
   if((left || up) && title_choice>0){title_choice--;menu_sound(115);}else if((right || down) && title_choice<2){title_choice++;menu_sound(115);}
   else if(confirm && title_choice==0)open_slots(0);
   else if(confirm && title_choice==1 && home_session && current_level>0)open_slots(1);
-  else if(confirm && title_choice==1 && !home_session && default_level()>=0){selected_options=0;gameplay_row=enhancement_row=0;selected_level=default_level();new_game_page=CAMPAIGN;menu_sound(111);}
+  else if(confirm && title_choice==1 && !home_session && default_level()>=0){memset(starting_weapons,0,sizeof starting_weapons);selected_options=0;gameplay_row=start_cheats=0;enhancement_row=-1;selected_level=default_level();new_game_page=CAMPAIGN;menu_sound(111);}
   else if(confirm && title_choice==2){title_page=0;return_frame=29;return_item=1;ring_exit=2;menu_sound(111);}
  }else if(title_page==8){
   if(confirm){title_page=0;return_item=1;menu_sound(112);}
   else {const Tr2AssaultScores *scores=tr2_home_scores();int count=0;while(count<10 && scores->times[count])count++;if(up && title_choice>0)title_choice--;if(down && title_choice+7<count)title_choice++;}
  }else if(title_page==CHEATS_PAGE){
-  if(confirm){title_page=0;return_item=1;ring_exit=CLOSE_FOR_SKIP;ring_held_key=0;menu_sound(111);}
+  int can_skip=current_level || tr2_home_campaign_exit();
+  title_choice=clamp(title_choice+down-up,can_skip?0:1,7);
+  if(confirm && title_choice){tr2_level_give(tr2_weapon_items[title_choice-1]);inventory_refresh();menu_sound(114);}
+  else if(confirm && can_skip){title_page=0;return_item=1;ring_exit=CLOSE_FOR_SKIP;ring_held_key=0;menu_sound(111);}
  }else if(title_page==5){
-  if(confirm){launch_options=0;launch_level=0;launch_campaign_home=0;title_page=0;return_item=1;ring_exit=3;ring_held_key=0;menu_sound(111);}
+  if(confirm){memset(launch_weapons,0,sizeof launch_weapons);launch_options=0;launch_level=0;launch_campaign_home=0;title_page=0;return_item=1;ring_exit=3;ring_held_key=0;menu_sound(111);}
  }else if(title_page==7){
   /* Unavailable rows never participate in navigation. */
   if(up || down){title_choice=(title_choice+(down?1:5))%6;menu_sound(108);}
@@ -422,7 +443,7 @@ static void title_key(int key){
 static void menu_tick(double dt){
  if(campaign_screen!=PLAY)return;
  ring_fraction+=dt*60;
- while(ring_fraction>=1 && running){ring_fraction-=1;
+ while(ring_fraction>=1 && running){ring_fraction-=1;remember_ring();
   if(ring_switch){
    ring_open=fmax(0,ring_open-1.0/24);
    if(ring_open<1e-8){ring_open=0;}
@@ -451,7 +472,7 @@ static void menu_tick(double dt){
   turning=turn_ticks!=0;
   for(int i=0;i<count;i++){int id=ring_id(i),selected=i==title_selection,inspect=selected && title_page;const MenuDescriptor *d=menu_descriptor(id);RingItem *item=ring_items+id;
    int frame=inspect?(id==133?page_frame():d->open):0;
-   if(!inspect && id==133 && return_item){frame=return_frame;if(item->frame==frame){item->closed=1;item->frame=frame=return_frame=0;}}
+   if(!inspect && id==133 && return_item){frame=return_frame;if(item->frame==frame){item->closed=1;item->display_frame=0;item->frame=frame=return_frame=0;}}
    move_item(item,d,selected,inspect,frame,turning);
    if(death_passport && title_page==1 && !title_choice && page_ready()){open_slots(0);return;}
    if(title_page==9 && page_ready()){title_page=0;return_item=flare_pick=1;}
@@ -468,8 +489,12 @@ static void title_scene(int full_w,int full_h){
  if(!home_session){menu_flat();glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,title_background);glColor3f(1,1,1);
  glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2i(0,0);glTexCoord2f(1,0);glVertex2i(640,0);glTexCoord2f(1,1);glVertex2i(640,480);glTexCoord2f(0,1);glVertex2i(0,480);glEnd();}
  if(new_game_page || (campaign_screen!=PLAY && !(death_passport && campaign_screen==LOAD_SLOTS)))return;
- if(home_session && game_ring!=OPTION_RING)level=tr2_home_menu_assets(textures);
- menu_projection();for(int i=0;i<ring_count();i++)draw_ring_item(ring_id(i),i*2*PI/ring_count()-title_angle);
+ menu_projection();
+ for(int i=0;i<ring_count();i++){
+  int id=ring_id(i);
+  if(home_session && game_ring!=OPTION_RING)level=tr2_ring_assets(id,textures);
+  draw_ring_item(id,i*2*PI/ring_count()-title_angle);
+ }
  level=title_level;memcpy(textures,title_textures,sizeof textures);
 }
 static void title_ui(void){
@@ -489,8 +514,14 @@ static void title_ui(void){
  if(!title_page){if(ring_open==1 && !turning && !return_item && !ring_exit)title_text(464,ring_name(title_selection),title_disabled(ring_id(title_selection))?-1:0);}
  else if(title_page==1)title_text(464,title_choice==0?"Load Game":title_choice==1?(home_session?"Save Game":"New Game"):(home_session?"Exit to Title":"Exit Game"),(title_choice==0 && !slots_available) || (title_choice==1 && (home_session?!current_level:(default_level()<0)))?-1:0);
  else if(title_page==CHEATS_PAGE){
-  menu_frame(level,textures,130,204,380,60,1);title_text(222,"Cheats",0);
-  menu_frame(level,textures,140,235,360,16,1);title_text(249,"Skip Level",0);
+  int top=148,can_skip=current_level || tr2_home_campaign_exit();
+  menu_frame(level,textures,130,top,380,186,1);title_text(top+18,"Cheats",0);
+  for(int row=0;row<8;row++){
+   char label[48];int y=top+39+18*row;
+   if(row)snprintf(label,sizeof label,"Give %s",gun_names[row-1]);
+   if(row==title_choice && (row || can_skip))menu_frame(level,textures,140,y-14,360,16,1);
+   title_text(y,row?label:"Skip Level",row || can_skip?0:-1);
+  }
  }
  else if(title_page==8 && current_level){show_statistics();}
  else if(title_page==8){
@@ -593,7 +624,8 @@ static int start_campaign_level(int index,int carry,int campaign_home){
   if(!running)return 1;
  }
  memset(home_keys,0,sizeof home_keys);
- if(!tr2_level_start(asset_root,level_files[index],index,entry_flags[index],entry_item[index],entry_extra[index],campaign_home,carry,launch_options))return 0;
+ if(!tr2_level_start(asset_root,level_files[index],index,entry_flags[index],entry_item[index],entry_extra[index],campaign_home,carry,launch_options,launch_weapons))return 0;
+ memset(launch_weapons,0,sizeof launch_weapons);
  tr2_level_rewards(rewards[index]);begin_level_flow(index);if(launch_options&TR2_AUTOSAVE)write_autosave();return 1;
 }
 static int return_to_title(void){

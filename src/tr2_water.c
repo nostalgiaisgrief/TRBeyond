@@ -176,7 +176,8 @@ void tr2_player_tick(const Tr2Level *l,Tr2Actor *a,Tr2Water *w,uint32_t input){
                 if(a->control.frame==tr2_i16(anim+18)-1)world->finished=1;
             }
         }
-        else if(a->control.current==8 && world){Tr2Height h;if(tr2_query(l,a->x,a->y,a->z,a->room,&h,NULL))tr2_world_trigger(l,world,a,h.trigger,0);}
+        /* Wake-up (428a30) checks the sector trigger. The world tick already
+           does that for Lara after animation, with the audio queue ready. */
         else if(a->control.current==3){
             if(world)world->hit_direction=-1;
             const uint8_t *animation=l->animations.data+a->control.animation*32;

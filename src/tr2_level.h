@@ -13,7 +13,7 @@ typedef struct {
     uint16_t nz,nx,flags;
     int16_t ambient,ambient2,light_mode,alternate;
 } Tr2Room;
-typedef struct {
+typedef struct Tr2Level {
     uint8_t *bytes;
     size_t size,parsed;
     uint32_t tile_count,room_count;
@@ -30,6 +30,7 @@ typedef struct {
     int sunset;
     int listener_room;
     Tr2Customisation custom;
+    struct Tr2Level *weapon_donor;
 } Tr2Level;
 
 uint16_t tr2_u16(const uint8_t *p);
@@ -39,5 +40,8 @@ int32_t tr2_i32(const uint8_t *p);
 Tr2Level *tr2_load(const char *path,char *error,size_t cap);
 void tr2_free(Tr2Level *level);
 const uint8_t *tr2_model(const Tr2Level *level,uint32_t id);
+static inline const Tr2Level *tr2_weapon_assets(const Tr2Level *level,int model){
+    return level->weapon_donor && !tr2_model(level,model)?level->weapon_donor:level;
+}
 int tr2_validate(const Tr2Level *level,char *error,size_t cap);
 #endif

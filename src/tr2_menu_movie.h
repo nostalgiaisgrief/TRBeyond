@@ -99,7 +99,7 @@ done:
  if(texture)glDeleteTextures(1,&texture);tomb_movie_close(&movie);
  glViewport(0,0,width,height);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);SwapBuffers(host->dc);return ok;
 }
-static void menu_reset(void){death_passport=0;lock_ring=0;if(home_session)inventory_refresh();new_game_page=PASSPORT;game_ring=ring_switch=switch_pitch=flare_pick=0;memset(ring_memory,0,sizeof ring_memory);memset(ring_items,0,sizeof ring_items);title_selection=title_page=title_choice=return_item=return_frame=turning=turn_ticks=ring_exit=ring_held_key=0;title_angle=ring_open=ring_fraction=0;control_capture=-1;running=1;}
+static void menu_reset(void){ring_history=0;death_passport=0;lock_ring=0;if(home_session)inventory_refresh();new_game_page=PASSPORT;game_ring=ring_switch=switch_pitch=flare_pick=0;memset(ring_memory,0,sizeof ring_memory);memset(ring_items,0,sizeof ring_items);title_selection=title_page=title_choice=return_item=return_frame=turning=turn_ticks=ring_exit=ring_held_key=0;title_angle=ring_open=ring_fraction=0;control_capture=-1;running=1;}
 static void test_settle(void){ring_held_key=0;for(int i=0;i<240;i++)menu_tick(1.0/60);}
 static int settings_roundtrip_test(void){
  char directory[MAX_PATH],temporary[MAX_PATH],saved_path[MAX_PATH];int saved_keys[14],music=title_music,effects=title_effects,layout=control_layout,framerate=title_framerate,resolution=title_resolution,filtering=title_filtering,force43=title_force43,water_style=title_water_style,distance=title_draw_distance;
@@ -185,6 +185,39 @@ static int skip_from_inventory_test(void){
  if(ring_open!=0 || !home_transition())return 0;
  campaign_events();return home_transition();
 }
+static int weapon_cheats_test(void){
+ const Tr2World *w=tr2_level_world();
+ launch_weapons[0]=launch_weapons[1]=2;
+ if(!start_campaign_level(1,0,0) || w->inventory->count[135] || w->inventory->count[136] || w->combat->weapon)return 0;
+ title_key('1');if(w->combat->requested)return 0;
+ launch_weapons[3]=1;
+ if(!start_campaign_level(5,0,0) || !w->inventory->count[138] || w->inventory->count[135])return 0;
+ tr2_level_remember();
+ if(!start_campaign_level(6,1,0) || !w->inventory->count[135] || w->combat->ammo[3]!=80)return 0;
+ for(int i=0;i<2;i++){
+  int index=i?18:0;
+  if(!start_campaign_level(index,0,!index))return 0;
+  for(int tick=0;tick<240;tick++)tr2_home_update(1.0/30,0);
+  title_key(VK_ESCAPE);test_settle();title_key(VK_DOWN);test_settle();title_key(VK_RIGHT);test_settle();
+  title_key(VK_RETURN);test_settle();
+  for(int row=0;row<7;row++){
+   title_key(VK_DOWN);title_key(VK_RETURN);title_key(VK_RETURN);
+   int id=tr2_weapon_items[row];
+   if(title_page!=CHEATS_PAGE || w->inventory->count[id]!=1 || !tr2_model(tr2_ring_assets(pickup_model(id),NULL),pickup_model(id))){fprintf(stderr,"Give test level %d row %d page %d count %d\n",index,row,title_page,w->inventory->count[id]);return 0;}
+  }
+  title_key(VK_ESCAPE);test_settle();title_key(VK_ESCAPE);test_settle();
+  if(!home_transition() || !home_playing || !tr2_home_weapon_test())return 0;
+  const int guns[]={1,2,4,3,5,6,7};
+  for(int n=0;n<7;n++){
+   title_key('1'+n);
+   for(int tick=0;tick<180 && (w->combat->weapon!=guns[n] || w->lara->gun_status!=4);tick++)tr2_home_update(1.0/30,0);
+   if(w->combat->weapon!=guns[n] || w->lara->gun_status!=4){fprintf(stderr,"quick key %d: weapon %d requested %d status %d health %d\n",n+1,w->combat->weapon,w->combat->requested,w->lara->gun_status,w->lara->control.health);return 0;}
+  }
+ }
+ if(!return_to_title())return 0;
+ fprintf(stderr,"TR2B start weapons, Give inventory and all seven guns drawn, fired and holstered in both Home levels: PASS\n");
+ return 1;
+}
 static int custom_campaign_test(void){
  char path[MAX_PATH];slot_path(path,TOMB_MANUAL_SLOTS);
  launch_options=TR2_AUTOSAVE|TR2_CONSISTENT_WEAPONS;
@@ -233,6 +266,12 @@ static int menu_self_test(void){
  media_extent(640,480,320,160,&vw,&vh);if(vw!=640 || vh!=320)return 0;
  media_extent(600,900,320,160,&vw,&vh);if(vw!=600 || vh!=300)return 0;
  if(!settings_roundtrip_test())return 0;
+ menu_reset();menu_tick(1.5/60);
+ if(ring_fraction!=.5 || ring_lerp(previous_radius,ring_radius())!=ring_radius()*.5)return 0;
+ title_render();
+ for(int id=157;id<=163;id++)if(ring_selection_sound(id)!=114)return 0;
+ menu_reset();
+ if(!weapon_cheats_test()){fprintf(stderr,"weapon cheats test failed\n");return 0;}
  if(!custom_campaign_test()){fprintf(stderr,"TR2B custom campaign regression failed\n");return 0;}
  {int rw,rh;const int expected_w[]={1920,1067,853,512},expected_h[]={1080,600,480,240};
   for(int n=0;n<4;n++){tr2_resolution_extent(n,1920,1080,&rw,&rh);if(rw!=expected_w[n] || rh!=expected_h[n])return 0;}
@@ -261,8 +300,11 @@ static int menu_self_test(void){
  for(int index=1;index>=0;index--){
   for(int page=CAMPAIGN;page<STARTING_LEVEL;page++){
    if(page==GAMEPLAY){
-    enhancement_row=0;selected_options=0;
+    enhancement_row=-1;selected_options=0;
     title_key(VK_DOWN);title_key(VK_RETURN);if(new_game_page!=ENHANCEMENTS)return 0;
+    title_key(VK_RIGHT);title_key(VK_DOWN);title_key(VK_LEFT);
+    if(!start_cheats || starting_weapons[0]!=2)return 0;
+    title_key(VK_RIGHT);title_key(VK_UP);title_key(VK_LEFT);title_key(VK_DOWN);
     title_key(VK_RIGHT);title_key(VK_DOWN);title_key(VK_RETURN);
     if(selected_options!=(TR2_AUTOSAVE|TR2_CONSISTENT_WEAPONS))return 0;
     title_key(VK_DOWN);title_key(VK_RETURN);if(new_game_page!=STARTING_LEVEL)return 0;
@@ -312,8 +354,13 @@ static int menu_self_test(void){
    w->combat->back_weapon=6;
    if(!tr2_wall_effect_test() || !tr2_wall_exit_test())return 0;campaign_events();if(pending_transition!=5 || !home_transition() || campaign_screen!=CUTSCENE)return 0;
    for(int frame=1;frame<=2504;frame++){
-    tr2_home_update(1.0/30,0);
+    if(frame==4 || frame==319){
+     tr2_home_update(1.0/60,0);
+     if(!tr2_cut_camera_test(frame-1,frame==319))return 0;
+     tr2_home_update(1.0/60,0);
+    }else tr2_home_update(1.0/30,0);
     if(!tr2_cut_actor_test())return 0;
+    if(frame==2220){tr2_home_render(width,height);if(!capture_image("build/tr2-cut1-laptop.ppm"))return 0;}
     if((frame==318 || frame==319 || frame==1976 || frame==1977) && !tr2_cut1_pistols_test(frame))return 0;
    }
    tr2_home_render(width,height);if(!tr2_level_finished() || glGetError()!=GL_NO_ERROR)return 0;
@@ -359,6 +406,7 @@ static int menu_self_test(void){
     else if(current_level!=i+1 || campaign_screen!=PLAY || !home_playing)return 0;
     if(current_level==4 && !tr2_creature_contact_test((const int[]){15,21,20},3))return 0;
     if(current_level==5){
+     tr2_home_update(1.0/30,0);if(tr2_audio_music_cue()!=63)return 0;
      if(w->inventory->count[135] || !tr2_creature_contact_test((const int[]){29,30,31},3))return 0;
      fprintf(stderr,"TR2B Offshore Rig diver and both armed workers: land, underwater and defeated contacts PASS\n");
     }
@@ -380,6 +428,8 @@ static int menu_self_test(void){
     launch_level=i;pending_transition=1;
     if(!home_transition() || current_level!=i || !home_playing)return 0;
     tr2_home_update(1.0/30,0);tr2_home_render(width,height);
+    if(i==5 && tr2_audio_music_cue()!=63)return 0;
+    if(i==5 && !tr2_rig_water_view_test())return 0;
     if(glGetError()!=GL_NO_ERROR)return 0;
    }
    fprintf(stderr,"TR2B all campaign starts and Home gate to Best Times and Great Wall: PASS\n");
@@ -465,7 +515,7 @@ int tr2_menu_run(const Tr2MenuHost *platform,int argc,char **argv){
    if(ok && shot){title_render();ok=capture_image("build/tr2-inventory-ring.ppm");}
    title_key(VK_DOWN);ring_fraction=0;menu_tick(24.0/60);ok=ok && game_ring==1 && ring_open==0;
    menu_tick(24.0/60);ok=ok && ring_open==1 && !switch_pitch;
-   test_settle();ok=ok && game_ring==1 && ring_count()==4 && ring_id(0)==133;
+   test_settle();ok=ok && game_ring==1 && ring_count()==5 && ring_id(0)==133;
    if(ok && shot){title_render();ok=capture_image("build/tr2-option-ring.ppm");}
    title_key(VK_LEFT);test_settle();title_key(VK_LEFT);test_settle();title_key(VK_RETURN);test_settle();
    ok=ok && title_page==7 && page_ready();{int cap=title_framerate;title_key(VK_DOWN);title_key(VK_DOWN);title_key(VK_RIGHT);title_key(VK_RETURN);ok=ok && title_choice==2 && title_page==7 && title_framerate==(cap+1)%3;title_key(VK_LEFT);ok=ok && title_framerate==cap;}

@@ -29,10 +29,12 @@ def inspect(selected):
 
 def install(selected,destination,payload,progress,cancel):
     from setup_import import Image,LEVELS,RUNTIME_FILES,check_cancel,generated_sine,install_bundled_campaign
+    from setup_import import SPACE_PER_SOURCE_GIB
     destination,payload=Path(destination).resolve(),Path(payload).resolve()
     if destination.exists() and (not destination.is_dir() or any(destination.iterdir())):raise ValueError('Choose a new or empty installation folder.')
     plan=inspect(selected);destination.parent.mkdir(parents=True,exist_ok=True)
-    if shutil.disk_usage(destination.parent).free<10*1024**3:raise ValueError('At least 10 GB of free space is required for PS1 data and movie conversion.')
+    if shutil.disk_usage(destination.parent).free < SPACE_PER_SOURCE_GIB * 1024**3:
+        raise ValueError(f'At least {SPACE_PER_SOURCE_GIB} GB of free space is required for PS1 data and movie conversion.')
     stage=Path(tempfile.mkdtemp(prefix='.trb-setup-',dir=destination.parent)).resolve()
     if stage.parent!=destination.parent or not stage.name.startswith('.trb-setup-'):raise ValueError('Invalid staging directory')
     committed=False

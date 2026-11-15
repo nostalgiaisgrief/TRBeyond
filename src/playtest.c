@@ -658,8 +658,14 @@ static int playtest_tick(TombPlaytest *p,uint32_t input) {
 }
 
 void tomb_gameplay_start(TombPlaytest *p,uint32_t options){
-    p->gameplay_options=options&(2047|TOMB_GUN_POWER_MASK|TOMB_3D_PICKUPS|TOMB_SAVE_CRYSTALS|TOMB_SHOW_LEVEL_NAME|TOMB_SKIP_STATS);
-    for(int j=0;j<3;j++)if(options&(4u<<j))tomb_inventory_add(&p->inventory,85+j);
+    p->gameplay_options=options&(2047|TOMB_GUN_POWER_MASK|TOMB_3D_PICKUPS|TOMB_SAVE_CRYSTALS|TOMB_SHOW_LEVEL_NAME|TOMB_SKIP_STATS|TOMB_START_WEAPON_FLAGS);
+    for(int slot=0;slot<4;slot++){
+        int choice=tomb_start_weapon_choice(options,slot);
+        if(choice==1 && !p->inventory.counts[slot]){
+            tomb_inventory_add(&p->inventory,84+slot);
+            if(slot==0)p->inventory.ammo[0]=1000;
+        }else if(choice==2)p->inventory.counts[slot]=0;
+    }
     if(p->objects)p->objects->invincible=(options&TOMB_INVINCIBLE)!=0;
     if(p->objects && !tomb_enemies_configure(p->objects,(options&TOMB_NO_ENEMIES)!=0)){p->blocked=1;p->status="Enemy removal service unavailable";}
 }

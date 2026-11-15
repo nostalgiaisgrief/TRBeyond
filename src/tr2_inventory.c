@@ -60,6 +60,34 @@ void tr2_inventory_add(Tr2World *w,int id){
     if(weapon>1 && v->count[ids[weapon]]){g->ammo[weapon]+=packs[weapon];return;}
     v->count[id]+=id==151?6:1;
 }
+const int tr2_weapon_items[7]={135,136,137,138,140,141,139};
+void tr2_give_weapon(Tr2World *w,int id){
+    if(!tr2_inventory_weapon(id))return;
+    if(id==135){w->inventory->count[id]=1;w->combat->ammo[1]=1000;return;}
+    tr2_inventory_add(w,w->inventory->count[id]?id+7:id);
+}
+void tr2_start_weapons(Tr2World *w,const unsigned char choices[7]){
+    int changed=0;
+    for(int row=0;row<7;row++){
+        int id=tr2_weapon_items[row];
+        if(choices[row]==1 && !w->inventory->count[id]){tr2_give_weapon(w,id);changed=1;}
+        if(choices[row]==2 && w->inventory->count[id]){
+            w->inventory->count[id]=0;changed=1;
+            for(unsigned i=0;i<w->level->items.count;i++){
+                if(tr2_i16(w->level->items.data+i*24)==id && w->objects[i].id==id+7)w->objects[i].id=id;
+            }
+        }
+    }
+    if(!changed)return;
+    int selected=w->combat->weapon,first=0;
+    for(int i=0;i<7;i++)if(w->inventory->count[tr2_weapon_items[i]]){
+        int gun=tr2_inventory_weapon(tr2_weapon_items[i]);
+        if(gun==selected){first=selected;break;}
+        if(!first)first=gun;
+    }
+    w->combat->weapon=w->combat->requested=w->combat->last_weapon=first;
+    tr2_campaign_entry(w);
+}
 static void pickup_event(Tr2Actor *a,int id){
     if(!a || a->event_count>=16)return;
     int event=a->event_count++;

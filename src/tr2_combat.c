@@ -243,15 +243,16 @@ int tr2_rifle_state(Tr2Combat *g,Tr2Actor *a,uint32_t input,int frame){
     return fire;
 }
 static void rifle_tick(const Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t input){
-    Tr2Combat *g=w->combat;const uint8_t *m=tr2_model(l,tr2_weapon_model(g->weapon));if(!m)return;
-    if(!g->rifle_active){memset(&g->rifle,0,sizeof g->rifle);tr2_set_animation(l,&g->rifle,tr2_u16(m+16)+(g->weapon==6?0:1),0);g->rifle.control.current=g->rifle.control.goal=1;g->rifle_active=1;}
+    Tr2Combat *g=w->combat;const Tr2Level *assets=tr2_weapon_assets(l,tr2_weapon_model(g->weapon));
+    const uint8_t *m=tr2_model(assets,tr2_weapon_model(g->weapon));if(!m)return;
+    if(!g->rifle_active){memset(&g->rifle,0,sizeof g->rifle);tr2_set_animation(assets,&g->rifle,tr2_u16(m+16)+(g->weapon==6?0:1),0);g->rifle.control.current=g->rifle.control.goal=1;g->rifle_active=1;}
     Tr2Actor *r=&g->rifle;int mode=a->gun_status;
     if(mode==3)r->control.goal=a->control.water_status==2?9:3;
     if(mode==4){
         if(input&TR2_ACTION)tr2_target_info(l,w,a);else g->target=-1;if(g->target<0)tr2_new_target(l,w,a);
         tr2_weapon_aim(&g->arms[0].aim,1820,g->yaw,g->pitch);
         if(g->arms[0].aim.locked){g->torso_yaw=g->arms[0].aim.yaw;g->torso_pitch=g->arms[0].aim.pitch;}
-        int frame=r->control.frame-tr2_i16(l->animations.data+r->control.animation*32+16);
+        int frame=r->control.frame-tr2_i16(assets->animations.data+r->control.animation*32+16);
         int shot=tr2_rifle_state(g,a,input,frame);
         if(shot==7){tr2_player_harpoon_fire(l,w,a);if(!(g->ammo[7]&3))g->harpoon_reload=1;}
         else if(shot==6)tr2_grenade_fire(l,w,a);
@@ -260,9 +261,9 @@ static void rifle_tick(const Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t input)
             if(fired){sound(a,45);g->arms[1].flash=3;}}
     }
 
-    Tr2Object item={0};item.pose=*r;item.status=1;tr2_object_animate(l,&item);*r=item.pose;
+    Tr2Object item={0};item.pose=*r;item.status=1;tr2_object_animate(assets,&item);*r=item.pose;
     for(int i=0;i<r->event_count;i++)if(a->event_count<16){int n=a->event_count++;a->event_kind[n]=r->event_kind[i];a->event_value[n]=r->event_value[i];}
-    int frame=r->control.frame-tr2_i16(l->animations.data+r->control.animation*32+16);
+    int frame=r->control.frame-tr2_i16(assets->animations.data+r->control.animation*32+16);
     if(mode==2){if(r->control.current==0 || r->control.current==6){a->gun_status=4;memset(g->arms,0,sizeof g->arms);g->target=-1;}else if(frame==10){g->meshes=2;g->back_weapon=0;}else if(a->control.water_status==1)r->control.goal=6;}
     if(mode==3){if(item.status==2){a->gun_status=0;g->rifle_active=0;g->target=-1;memset(g->arms,0,sizeof g->arms);}else if(r->control.current==3 && frame==21){g->meshes=0;g->back_weapon=g->weapon;}}
     g->arms[0].frame=g->arms[1].frame=(int16_t)frame;
@@ -304,17 +305,18 @@ void tr2_combat_view_tick(const Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t inp
     }
     int allowed=g->requested==7 || a->control.water_status==0 || (a->control.water_status==4 && a->water_distance> -(g->weapon>=4?500:650));
     if(!a->gun_status && g->requested>=1 && g->requested<=7 && ((input&32) || g->weapon!=g->requested) && allowed && w->inventory->count[g->requested==7?139:g->requested==5?140:g->requested==6?141:g->requested==4?136:g->requested==2?137:g->requested==3?138:135]){a->gun_status=2;g->weapon=g->last_weapon=g->requested;
-        if(l->custom.options&TR2_CONSISTENT_WEAPONS){
-            w->level->custom.last_drawn=g->weapon;
-            if(g->weapon<=3)w->level->custom.sidearm=g->weapon;
-        }
+        if(l->custom.options&TR2_CONSISTENT_WEAPONS)w->level->custom.last_drawn=g->weapon;
         g->arms[0].frame=g->arms[1].frame=0;g->target=-1;g->rifle_active=0;}
     if(g->weapon<1 || g->weapon>7)return;
     allowed=g->weapon==7 || a->control.water_status==0 || (a->control.water_status==4 && a->water_distance> -(g->weapon>=4?500:650));
     if(a->gun_status==4 && ((input&32) || !allowed || g->requested!=g->weapon))a->gun_status=3;
     if(a->gun_status==4 && (input&TR2_ACTION) && g->weapon>1 && g->ammo[g->weapon]<=0){g->ammo[g->weapon]=0;sound(a,48);g->requested=w->inventory->count[135]?1:0;return;}
     if(g->weapon>=4 && g->weapon<=7){int ready=a->gun_status==4;if(a->gun_status>=2 && a->gun_status<=4)rifle_tick(l,w,a,input);if(ready && (g->weapon==4 || g->weapon==5) && g->arms[1].flash)tr2_dynamic_light(w,a->x+tr2_asr(tr2_sin(a->yaw),4),a->y-512,a->z+tr2_asr(tr2_cos(a->yaw),4),12,11);return;}
-    if(a->gun_status==2){int before=g->arms[0].frame;if(tr2_pistol_draw(g))a->gun_status=4;else if(before!=13 && g->arms[0].frame==13)sound(a,6);return;}
+    if(a->gun_status==2){
+        if(tr2_pistol_draw(g))a->gun_status=4;
+        else if(g->arms[0].frame==13){w->level->custom.sidearm=g->weapon;sound(a,6);}
+        return;
+    }
     if(a->gun_status==3){int frames[2]={g->arms[0].frame,g->arms[1].frame};if(tr2_pistol_holster(g))a->gun_status=0;for(int i=0;i<2;i++)if(frames[i]==13)sound(a,7);g->torso_yaw=(int16_t)((g->arms[0].aim.yaw+g->arms[1].aim.yaw)/4);g->torso_pitch=(int16_t)((g->arms[0].aim.pitch+g->arms[1].aim.pitch)/4);return;}
     if(a->gun_status!=4)return;
     if(input&TR2_ACTION)tr2_target_info(l,w,a);else g->target=-1;

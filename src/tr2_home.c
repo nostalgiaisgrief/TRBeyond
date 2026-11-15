@@ -49,9 +49,9 @@ void tr2_home_resolution(int setting){resolution_setting=setting>=0 && setting<=
 #define PI 3.14159265358979323846
 static Tr2World world;
 static Tr2Actor actor;
-static int campaign_home_exit;
+static int campaign_home_exit,session_level,quick_draw;
 int tr2_home_campaign_exit(void){return campaign_home_exit;}
-static int cutscene,scene_yaw,cut_pistol_hands,cut_lara_swapped;
+static int cutscene,cut1_laptop,scene_yaw,cut_pistol_hands,cut_lara_swapped;
 static unsigned *cut_meshes;
 void tr2_level_cut_angle(int angle){scene_yaw=angle;}
 static Tr2CampaignTotals prior_totals;
@@ -84,6 +84,7 @@ void tr2_level_skip(void){
 }
 int tr2_level_finished(void){return world.finished;}
 int tr2_level_keys_requested(void){int request=world.inventory_request;world.inventory_request=0;return request;}
+void tr2_level_give(int id){tr2_give_weapon(&world,id);}
 int tr2_level_use(int item,int request){
     int result=tr2_inventory_use(&world,&actor,item);
     if(result && request>=2 && (unsigned)(request-2)<world.count){
@@ -92,6 +93,11 @@ int tr2_level_use(int item,int request){
     }
     if(result==116)tr2_home_menu_sound(result);
     return result;
+}
+void tr2_quick_weapon(int item){
+    if(!level || world.cinematic_active || actor.extra_animation || actor.control.health<=0)return;
+    if(tr2_level_use(item,0))
+        quick_draw=!actor.gun_status && world.combat->weapon==world.combat->requested;
 }
 void tr2_level_sunset(int enabled){level->sunset=enabled;}
 void tr2_level_rewards(const int rewards[27]){memcpy(world.rewards,rewards,sizeof world.rewards);}
@@ -112,7 +118,7 @@ int tr2_home_use_flare(void){return world.inventory?tr2_inventory_use(&world,&ac
 static char score_path[MAX_PATH];
 static Tr2AssaultScores saved_scores;
 const Tr2AssaultScores *tr2_home_scores(void){return &world.assault_scores;}
-unsigned tr2_home_stopwatch_ticks(void){return world.inventory && world.start_inventory->count[135]?(unsigned)world.inventory->ticks:(unsigned)world.assault_ticks;}
+unsigned tr2_home_stopwatch_ticks(void){return world.inventory && session_level>0?(unsigned)world.inventory->ticks:(unsigned)world.assault_ticks;}
 void tr2_home_score_path(const char *path){
  snprintf(score_path,sizeof score_path,"%s",path);memset(&saved_scores,0,sizeof saved_scores);
  if(!score_path[0])return;
@@ -141,6 +147,12 @@ static GLuint textures[256],mesh_lists;
 static Tr2Level *weapon_assets;
 static GLuint weapon_textures[256];
 static double *mesh_radius;
+Tr2Level *tr2_ring_assets(int model,unsigned *pages){
+    Tr2Level *source=level;
+    if(model>=157 && model<=170 && weapon_assets && !tr2_model(level,model))source=weapon_assets;
+    if(pages)memcpy(pages,source==level?textures:weapon_textures,sizeof textures);
+    return source;
+}
 Tr2Level *tr2_home_menu_assets(unsigned pages[256]){memcpy(pages,textures,sizeof textures);return level;}
 static int width,height,menu_mesh_shade,object_shade;
 static int health_previous,health_timer,death_ticks,death_return;
@@ -200,7 +212,10 @@ static uint64_t render_tick;
 static int render_recording,render_camera_room;
 static double render_alpha=1,render_view[16];
 static Tr2Camera render_camera_previous,render_camera_current;
-static int render_camera_key,render_camera_target,render_flip;
+static int render_camera_key,render_camera_target,render_flip,render_cine_frame;
+static int render_shot_change;
+static int previous_fov,current_fov,previous_roll,current_roll;
+static double view_fov=80,view_roll;
 static Tr2Level render_light_level;
 static Tr2World render_light_world;
 static Tr2Hazards render_light_hazards;
@@ -272,6 +287,11 @@ static int texture_index(const Tr2Level *assets,int index){
         for(unsigned j=0;j<count;j++)if(tr2_u16(span->data+(at+j)*2)==index)return tr2_u16(span->data+(at+(j+(unsigned)texture_phase)%count)*2);
         at+=count;
     }return index;
+}
+static int placement_shade(const Tr2Room *room,const uint8_t *shades){
+    int first=tr2_i16(shades);
+    if(!room->light_mode)return first;
+    return first+(tr2_i16(shades+2)-first)*tr2_room_light_phase(level,room,light_phase)/31;
 }
 static void object_light(int room,int x,int y,int z,int shade){
     for(int k=0;k<8;k++)glDisable(GL_LIGHT0+k);
@@ -531,8 +551,9 @@ static unsigned model_mesh(uint32_t id,unsigned start,unsigned i,int track){
         /* 43123f starts cinematic Lara with pistol-model thighs. Effects
            14/15 exchange each hand with the corresponding pistol hand. */
         if((!cut_lara_swapped && (i==1 || i==4)) || (i==10 && (cut_pistol_hands&2)) || (i==13 && (cut_pistol_hands&1))){
+            if((i==1 && (cut_pistol_hands&1)) || (i==4 && (cut_pistol_hands&2)))return mesh;
             if(level->custom.options&TR2_CONSISTENT_WEAPONS){
-                if(!level->custom.sidearm || (i==1 && (cut_pistol_hands&1)) || (i==4 && (cut_pistol_hands&2)))return mesh;
+                if(!level->custom.sidearm)return mesh;
                 return weapon_mesh(tr2_weapon_model(level->custom.sidearm),i,mesh);
             }
             const uint8_t *gun=tr2_model(level,1);if(gun)return tr2_u16(gun+6)+i;
@@ -540,15 +561,14 @@ static unsigned model_mesh(uint32_t id,unsigned start,unsigned i,int track){
         return cut_meshes?cut_meshes[mesh]:mesh;
     }
     if(cut_meshes)return cut_meshes[mesh];
-    if(id==0 && (level->custom.options&TR2_CONSISTENT_WEAPONS) && (i==1 || i==4)){
+    if(id==0 && world.combat && (i==1 || i==4)){
         int drawn=world.combat->weapon>=1 && world.combat->weapon<=3 && (world.combat->meshes&(i==1?1:2));
         return level->custom.sidearm && !drawn?weapon_mesh(tr2_weapon_model(level->custom.sidearm),i,mesh):mesh;
     }
-    if(id==0 && world.combat && (world.inventory->count[135] || (level->custom.options&TR2_CONSISTENT_WEAPONS)) && world.combat->weapon>=1 && world.combat->weapon<=3){
-        int arm=(i==1 || i==13)?0:(i==4 || i==10)?1:-1;int drawn=arm>=0 && (world.combat->meshes&(1u<<arm));
-        if(arm>=0 && ((i==1 || i==4)?!drawn:drawn)){int weapon=world.combat->weapon;mesh=weapon_mesh(tr2_weapon_model(weapon),i,mesh);}
+    if(id==0 && world.combat && world.combat->weapon>=1 && world.combat->weapon<=3){
+        if((i==13 && (world.combat->meshes&1)) || (i==10 && (world.combat->meshes&2)))
+            mesh=weapon_mesh(tr2_weapon_model(world.combat->weapon),i,mesh);
     }
-    if(id==0 && world.combat && world.combat->weapon>=4 && world.inventory->count[135] && (i==1 || i==4)){const uint8_t *gun=tr2_model(level,1);if(gun)mesh=tr2_u16(gun+6)+i;}
     if(id==0 && world.combat && world.combat->weapon>=4 && world.combat->weapon<=7 && i==10 && (world.combat->meshes&2))mesh=weapon_mesh(tr2_weapon_model(world.combat->weapon),i,mesh);
     if(id==0 && world.combat->weapon==8 && i==13 && (world.combat->meshes&1)){const uint8_t *flare=tr2_model(level,9);if(flare)mesh=tr2_u16(flare+6)+i;}
     return mesh;
@@ -599,21 +619,39 @@ static void model(uint32_t id,int animation,double ticks,double x,double y,doubl
                 if((flags&1) && stack){glPopMatrix();stack--;}
                 if(flags&2){glPushMatrix();stack++;}
                 glTranslatef((float)tr2_i32(bone+4),(float)tr2_i32(bone+8),(float)tr2_i32(bone+12));
-                if(frame+4>end)break;const uint8_t *rotation=frame;unsigned packed_size=(tr2_u16(frame)>>14)?2:4;frame+=packed_size;
+                /* The six CUT1 picture planes sit 20 units ahead of the lid.
+                   Leave one unit of clearance so its backing cannot z-fight. */
+                if(cut1_laptop && id==128)glTranslatef(-19,0,0);
+                if(frame+4>end)break;const uint8_t *rotation_end=end,*rotation=frame;unsigned packed_size=(tr2_u16(frame)>>14)?2:4;frame+=packed_size;
                 Tr2Combat *g=world.combat;
                 if(id==0 && !actor.extra_animation && g && g->weapon>=1 && g->weapon<=3 && actor.gun_status>=2 && actor.gun_status<=4 && i>=8 && i<=13){
-                    int arm=i>=11?0:1;const uint8_t *pistol=tr2_model(level,1);
+                    int arm=i>=11?0:1;const Tr2Level *assets=tr2_weapon_assets(level,1);const uint8_t *pistol=tr2_model(assets,1);
                     if(pistol){int f=g->arms[arm].frame;unsigned an=tr2_u16(pistol+16)+(f<5?0:f<13?1:f<24?2:3);
-                        if(an<level->animations.count){const uint8_t *aa=level->animations.data+an*32;unsigned off=tr2_u32(aa)+(unsigned)(f-tr2_i16(aa+16))*aa[5]*2;
-                            if(off+18<level->frames.count*2){rotation=level->frames.data+off+18;for(unsigned j=0;j<i && rotation+4<=end;j++)rotation+=(tr2_u16(rotation)>>14)?2:4;}}
+                        if(an<assets->animations.count){const uint8_t *aa=assets->animations.data+an*32;unsigned off=tr2_u32(aa)+(unsigned)(f-tr2_i16(aa+16))*aa[5]*2;
+                            if(off+18<assets->frames.count*2){rotation_end=assets->frames.data+assets->frames.count*2;rotation=assets->frames.data+off+18;for(unsigned j=0;j<i && rotation+4<=rotation_end;j++)rotation+=(tr2_u16(rotation)>>14)?2:4;}}
                     }
-                    if((i==8 || i==11) && actor.gun_status==4){double shoulder[16];glGetDoublev(GL_MODELVIEW_MATRIX,shoulder);glLoadIdentity();glTranslated(shoulder[12],shoulder[13],shoulder[14]);glRotated(g->arms[arm].aim.yaw*(360.0/65536),0,1,0);glRotated(g->arms[arm].aim.pitch*(360.0/65536),1,0,0);}
+                    /* 41a58f / 41b25e restore Lara's basis at each shoulder
+                       before applying the independent arm rotation. */
+                    if(i==8 || i==11){
+                        double shoulder[16];glGetDoublev(GL_MODELVIEW_MATRIX,shoulder);
+                        glLoadIdentity();glTranslated(shoulder[12],shoulder[13],shoulder[14]);
+                        const Tr2ArmAim *aim=&g->arms[arm].aim;
+                        glRotated(aim->yaw*(360.0/65536),0,1,0);
+                        glRotated(aim->pitch*(360.0/65536),1,0,0);
+                        glRotated(aim->roll*(360.0/65536),0,0,1);
+                    }
                 }
-                if(id==0 && !actor.extra_animation && g && ((g->rifle_active && i>=8 && i<=13) || (g->weapon==8 && g->flare_control && i>=11 && i<=13))){
-                    const uint8_t *aa=level->animations.data+g->rifle.control.animation*32;unsigned off=tr2_u32(aa)+(unsigned)(g->rifle.control.frame-tr2_i16(aa+16))*aa[5]*2;
-                    if(off+18<level->frames.count*2){rotation=level->frames.data+off+18;for(unsigned j=0;j<i && rotation+4<=end;j++)rotation+=(tr2_u16(rotation)>>14)?2:4;}
+                /* DrawLara 41a174 and DrawLara_I 41adbc take the torso and head
+                   from the M16 frame in standing aim, fire and unaim states. */
+                int rifle_state=g?g->rifle.control.current:0;
+                int m16_upper_body=g && g->weapon==5 && (i==7 || i==14) &&
+                    (rifle_state==0 || rifle_state==2 || rifle_state==4);
+                if(id==0 && !actor.extra_animation && g && ((g->rifle_active && ((i>=8 && i<=13) || m16_upper_body)) || (g->weapon==8 && g->flare_control && i>=11 && i<=13))){
+                    const Tr2Level *assets=g->rifle_active?tr2_weapon_assets(level,tr2_weapon_model(g->weapon)):level;
+                    const uint8_t *aa=assets->animations.data+g->rifle.control.animation*32;unsigned off=tr2_u32(aa)+(unsigned)(g->rifle.control.frame-tr2_i16(aa+16))*aa[5]*2;
+                    if(off+18<assets->frames.count*2){rotation_end=assets->frames.data+assets->frames.count*2;rotation=assets->frames.data+off+18;for(unsigned j=0;j<i && rotation+4<=rotation_end;j++)rotation+=(tr2_u16(rotation)>>14)?2:4;}
                 }
-                rotate_frame(&rotation,end);
+                rotate_frame(&rotation,rotation_end);
                 if(ring_frame && id==121 && i>=2 && i<=4){
                     int seconds=world.inventory->ticks/30;
                     int angle=i==2?-(seconds%60)*1092:i==3?-(seconds%3600)*182/10:-(seconds/60)*182/10;
@@ -711,7 +749,7 @@ static int static_visible(unsigned room,const uint8_t *placement,const uint8_t *
         if(fabs(translation)>=131072)return 1;
         matrix[row*4+3]=(int32_t)llround(sign*translation*16384);
     }
-    double fov=world.cinematic_active && world.cinematic_fov>0?world.cinematic_fov*(360.0/65536):80;
+    double fov=world.cinematic_active?view_fov:80;
     int perspective=(int)(height/(2*tan(fov*PI/360)*.75));
     const double *r=room_rectangles[room];
     int view_width=(int)lround(width/render_pixel_scale);
@@ -720,14 +758,14 @@ static int static_visible(unsigned room,const uint8_t *placement,const uint8_t *
     return tr2_render_bounds(bounds,matrix,perspective,20*16384,(int64_t)(render_far_distance()*16384),view_width/2,height/2,view_width-1,height-1,clip)!=0;
 }
 static void room_statics(uint32_t i){
-        const Tr2Room *r=level->rooms+i;int phase=tr2_room_light_phase(level,r,light_phase);
+        const Tr2Room *r=level->rooms+i;
         for(uint32_t j=0;j<r->statics.count;j++){
             const uint8_t *p=r->statics.data+j*20;uint16_t id=tr2_u16(p+18);
             for(uint32_t k=0;k<level->statics.count;k++){
                 const uint8_t *s=level->statics.data+k*32;if(tr2_u32(s)!=id)continue;
                 if(!static_visible(i,p,s))break;
                 uint16_t mesh=tr2_u16(s+4);if(mesh>=level->mesh_offsets.count)continue;
-                int shade=tr2_i16(p+14);if(r->light_mode)shade+=(tr2_i16(p+16)-shade)*phase/31;
+                int shade=placement_shade(r,p+14);
                 object_light((int)i,tr2_i32(p),tr2_i32(p+4),tr2_i32(p+8),shade);
                 glPushMatrix();glTranslatef((float)tr2_i32(p),(float)tr2_i32(p+4),(float)tr2_i32(p+8));
                 glRotatef(tr2_u16(p+12)*(360.f/65536),0,1,0);draw_mesh(mesh);glPopMatrix();
@@ -769,7 +807,7 @@ static void camera_matrix(void){
     double f[3]={sin(heading)*cos(pitch),sin(pitch),cos(heading)*cos(pitch)};
     double r[3]={cos(heading),0,-sin(heading)},u[3]={r[1]*f[2]-r[2]*f[1],r[2]*f[0]-r[0]*f[2],r[0]*f[1]-r[1]*f[0]},m[16]={0};
     for(int i=0;i<3;i++){m[4*i]=r[i];m[4*i+1]=u[i];m[4*i+2]=-f[i];m[12]-=r[i]*eye[i];m[13]-=u[i]*eye[i];m[14]+=f[i]*eye[i];}
-    m[15]=1;glLoadIdentity();if(world.cinematic_active)glRotated(world.cinematic_roll*(360.0/65536),0,0,1);glMultMatrixd(m);
+    m[15]=1;glLoadIdentity();if(world.cinematic_active)glRotated(view_roll,0,0,1);glMultMatrixd(m);
 }
 static void sprite(int index,int x,int y,int z,int shade){
     if((uint32_t)index>=level->sprites.count)return;
@@ -797,9 +835,7 @@ static void visible_rooms(uint8_t visible[1024]){
     if(render_camera_room<0 || (uint32_t)render_camera_room>=level->room_count){memset(visible,1,1024);return;}
     unsigned queue[8192],head=0,tail=0;
     int room=render_camera_room;visible[room]=1;rectangles[room][0]=rectangles[room][1]=-1;rectangles[room][2]=rectangles[room][3]=1;queue[tail++]=(unsigned)room;
-    double f[3]={sin(heading)*cos(pitch),sin(pitch),cos(heading)*cos(pitch)},r[3]={cos(heading),0,-sin(heading)};
-    double u[3]={r[1]*f[2]-r[2]*f[1],r[2]*f[0]-r[0]*f[2],r[0]*f[1]-r[1]*f[0]};
-    double fy=1/(tan(80*PI/360)*.75),fx=fy*height/width*render_pixel_scale;
+    GLdouble projection[16];glGetDoublev(GL_PROJECTION_MATRIX,projection);
     while(head<tail && tail<8192){room=(int)queue[head++];const Tr2Room *rm=level->rooms+room;
         for(uint32_t i=0;i<rm->portals.count;i++){
             const uint8_t *p=rm->portals.data+i*32;unsigned next=tr2_u16(p);if(next>=level->room_count || next>=1024)continue;
@@ -811,11 +847,13 @@ static void visible_rooms(uint8_t visible[1024]){
             if(facing>=0)continue;
             double bounds[4]={1,1,-1,-1},view[4][3];int behind=0,beyond=0;
             for(int v=0;v<4;v++){
-                double d[3]={rm->x+tr2_i16(p+8+v*6)-eye[0],tr2_i16(p+10+v*6)-eye[1],rm->z+tr2_i16(p+12+v*6)-eye[2]};
-                double z=d[0]*f[0]+d[1]*f[1]+d[2]*f[2];
-                view[v][0]=d[0]*r[0]+d[1]*r[1]+d[2]*r[2];view[v][1]=d[0]*u[0]+d[1]*u[1]+d[2]*u[2];view[v][2]=z;
+                double xw=rm->x+tr2_i16(p+8+v*6),yw=tr2_i16(p+10+v*6),zw=rm->z+tr2_i16(p+12+v*6);
+                for(int axis=0;axis<3;axis++)
+                    view[v][axis]=render_view[axis]*xw+render_view[4+axis]*yw+render_view[8+axis]*zw+render_view[12+axis];
+                view[v][2]=-view[v][2];
+                double z=view[v][2];
                 if(z<=0){behind++;continue;}if(z>render_far_distance())beyond++;
-                double x=view[v][0]*fx/z,y=view[v][1]*fy/z;
+                double x=view[v][0]*projection[0]/z,y=view[v][1]*projection[5]/z;
                 if(x-2.0/width<bounds[0])bounds[0]=x-2.0/width;if(y-2.0/height<bounds[1])bounds[1]=y-2.0/height;
                 if(x+2.0/width>bounds[2])bounds[2]=x+2.0/width;if(y+2.0/height>bounds[3])bounds[3]=y+2.0/height;
             }
@@ -862,6 +900,37 @@ static void draw_sky(void){
     rotate_frame(&rotation,level->frames.data+level->frames.count*2);
     sky_mesh=1;mesh_geometry(level,textures,tr2_u16(m+6),0,NULL);sky_mesh=0;glPopMatrix();
 }
+/* Tomb2.exe 4191a0 intersects the room's interior box with the far plane
+   and fills its projected bounding rectangle within the room portal bounds. */
+
+static void draw_room_far_fill(const Tr2Room *room,double far_depth){
+    double corners[8][3];
+    unsigned beyond=0;
+    for(unsigned i=0;i<8;i++){
+        double x=room->x+1024*((i&1)?room->nx-1:1);
+        double y=(i&2)?room->bottom:room->top;
+        double z=room->z+1024*((i&4)?room->nz-1:1);
+        for(int axis=0;axis<3;axis++)
+            corners[i][axis]=render_view[axis]*x+render_view[4+axis]*y+render_view[8+axis]*z+render_view[12+axis];
+        if(corners[i][2]<-far_depth)beyond|=1u<<i;
+    }
+    if(!beyond || beyond==255)return;
+    double left=HUGE_VAL,right=-HUGE_VAL,bottom=HUGE_VAL,top=-HUGE_VAL;
+    for(unsigned i=0;i<8;i++)for(unsigned bit=1;bit<=4;bit<<=1){
+        if(i&bit)continue;
+        unsigned j=i|bit;
+        if(((beyond>>i)^(beyond>>j))&1u){
+            const double *a=corners[i],*b=corners[j];
+            double t=(-far_depth-a[2])/(b[2]-a[2]);
+            double x=a[0]+t*(b[0]-a[0]),y=a[1]+t*(b[1]-a[1]);
+            left=fmin(left,x);right=fmax(right,x);bottom=fmin(bottom,y);top=fmax(top,y);
+        }
+    }
+    glBegin(GL_QUADS);
+    glVertex3d(left,bottom,-far_depth);glVertex3d(right,bottom,-far_depth);
+    glVertex3d(right,top,-far_depth);glVertex3d(left,top,-far_depth);
+    glEnd();
+}
 static void ground_shadow(const Tr2Actor *a,int id){
     int size=shadow_size(id);if(!size)return;
     int bounds[6],points[8][2];Tr2Height h;
@@ -892,7 +961,7 @@ static void render(void){
     if(width<1 || height<1)return;
     glViewport(0,0,width,height);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT);
     glEnable(GL_DEPTH_TEST);glDepthFunc(GL_LEQUAL);glDisable(GL_CULL_FACE);
-    glMatrixMode(GL_PROJECTION);glLoadIdentity();double fov=world.cinematic_active && world.cinematic_fov>0?world.cinematic_fov*(360.0/65536):80;double top=16*tan(fov*PI/360)*0.75,right=top*width/(height*render_pixel_scale);
+    glMatrixMode(GL_PROJECTION);glLoadIdentity();double fov=world.cinematic_active?view_fov:80;double top=16*tan(fov*PI/360)*0.75,right=top*width/(height*render_pixel_scale);
     glFrustum(-right,right,-top,top,16,render_far_distance());glMatrixMode(GL_MODELVIEW);camera_matrix();glGetDoublev(GL_MODELVIEW_MATRIX,render_view);
     uint8_t alternate[1024]={0},visible[1024]={0};if(cutscene){/* InitCinematicRooms 0x412060 includes every non-alternate room. */
         for(unsigned i=0;i<level->room_count;i++){visible[i]=1;room_rectangles[i][0]=room_rectangles[i][1]=-1;room_rectangles[i][2]=room_rectangles[i][3]=1;}
@@ -925,6 +994,16 @@ static void render(void){
        Submit visible rooms directly: recording and immediately replaying a
        display list each frame adds work without reusing the calculated data. */
     glEnable(GL_SCISSOR_TEST);
+    if(!draw_distance_setting && outside_visible){
+        glPushAttrib(GL_ENABLE_BIT|GL_CURRENT_BIT|GL_DEPTH_BUFFER_BIT);
+        glDisable(GL_TEXTURE_2D);glDisable(GL_LIGHTING);glDisable(GL_BLEND);glDisable(GL_ALPHA_TEST);
+        glDisable(GL_DEPTH_TEST);glDepthMask(GL_FALSE);glColor3ub(0,0,0);
+        glPushMatrix();glLoadIdentity();
+        for(uint32_t i=0;i<level->room_count;i++)if(!alternate[i] && visible[i] && (level->rooms[i].flags&64)){
+            room_scissor(i);draw_room_far_fill(level->rooms+i,render_far_distance());
+        }
+        glPopMatrix();glPopAttrib();
+    }
     for(uint32_t i=0;i<level->room_count;i++)if(!alternate[i] && visible[i]){room_scissor(i);draw_room(i);}
     /* Preserve the previous far clipping for statics, sprites and actors;
        all passes use the same projection/depth mapping. */
@@ -967,7 +1046,14 @@ static void render(void){
         render_entry=render_entries?render_entries+1+i:NULL;
         ground_shadow(a,o->id);
         int light_x=a->x,light_y=a->y,light_z=a->z;render_particle_position(1+i,o->id,&light_x,&light_y,&light_z);
-        object_light(a->room,light_x,light_y-512,light_z,-1);
+        /* CalculateObjectLighting (41be89/41bf34) uses the item's authored
+           shades and origin when its first shade is nonnegative. */
+        int shade=-1;
+        if(i<level->items.count && (unsigned)a->room<level->room_count){
+            const uint8_t *shades=level->items.data+i*24+18;
+            if(tr2_i16(shades)>=0)shade=placement_shade(level->rooms+a->room,shades);
+        }
+        object_light(a->room,light_x,shade>=0?light_y:light_y-512,light_z,shade);
         model_creature=world.creatures+i;
         model(o->id==13 && o->snow.drive.armed?51u:(uint32_t)o->id,a->control.animation,a->control.frame-tr2_i16(animation+16),a->x,a->y,a->z,a->yaw*(360.0/65536),tr2_object_mesh_mask(o),a->pitch,a->control.roll,(o->id==13 || o->id==51)?o->effect_counter:0);model_creature=NULL;
         if(o->id==22 && o->effect_counter< -100){
@@ -996,7 +1082,8 @@ static void render(void){
     }
     if(world.hazards){
         for(int i=0;i<TR2_MAX_DARTS;i++){const Tr2Object *d=world.hazards->darts+i;const Tr2Actor *a=&d->pose;if(!d->active || !render_visible_entry(render_darts()+i,a->room,visible))continue;
-            const uint8_t *m=tr2_model(level,(uint32_t)d->id);if(!m)continue;object_light(a->room,a->x,a->y,a->z,-1);
+            const Tr2Level *assets=d->id==248 || d->id==249?tr2_weapon_assets(level,d->id):level;
+            const uint8_t *m=tr2_model(assets,(uint32_t)d->id);if(!m)continue;object_light(a->room,a->x,a->y,a->z,-1);
             if(d->id>=209 && d->id<=211){
                 glPushMatrix();glTranslated(a->x,a->y,a->z);glRotated(a->yaw*(360.0/65536),0,1,0);
                 float scale=d->timer/256.f;glScalef(scale,scale,scale);draw_mesh(tr2_u16(m+6));glPopMatrix();continue;
@@ -1005,7 +1092,7 @@ static void render(void){
                 model(d->id,a->control.animation,a->control.frame-tr2_i16(level->animations.data+a->control.animation*32+16),a->x,a->y,a->z,a->yaw*(360.0/65536),UINT64_MAX,0,0,0);
                 continue;
             }
-            glPushMatrix();glTranslated(a->x,a->y,a->z);glRotated(a->yaw*(360.0/65536),0,1,0);glRotated(a->pitch*(360.0/65536),1,0,0);glRotated(a->control.roll*(360.0/65536),0,0,1);if(render_entries)render_sample(&render_entries[render_darts()+i].root,0,d->id);draw_mesh(tr2_u16(m+6));
+            glPushMatrix();glTranslated(a->x,a->y,a->z);glRotated(a->yaw*(360.0/65536),0,1,0);glRotated(a->pitch*(360.0/65536),1,0,0);glRotated(a->control.roll*(360.0/65536),0,0,1);if(render_entries)render_sample(&render_entries[render_darts()+i].root,0,d->id);draw_mesh(tr2_u16(m+6)+(assets==level?0:level->mesh_offsets.count));
             if(d->id==152 && ((uint16_t)d->timer&32768)){const uint8_t *flame=tr2_model(level,235);if(flame){object_light(-1,0,0,0,2048);glTranslatef(-6,6,80);glRotatef(-16380*(360.f/65536),1,0,0);glRotatef((world.hazards->random_draw&65535)*(360.f/65536),0,0,1);draw_mesh(tr2_u16(flame+6));}}glPopMatrix();}
         for(int i=0;i<TR2_MAX_EFFECTS;i++){const Tr2Fragment *f=world.hazards->effects+i;if(!f->active || !render_visible_entry(render_effects()+i,f->room,visible))continue;if(f->object==240 || f->object==245 || f->object==247){const uint8_t *flash=tr2_model(level,f->object);if(flash){object_light(-1,0,0,0,f->shade);glPushMatrix();glTranslatef(f->x,f->y,f->z);glRotatef(f->yaw*(360.f/65536),0,1,0);glRotatef(f->pitch*(360.f/65536),1,0,0);glRotatef(f->roll*(360.f/65536),0,0,1);if(render_entries)render_sample(&render_entries[render_effects()+i].root,0,f->object);draw_mesh(tr2_u16(flash+6));glPopMatrix();}continue;}int base=sprite_index(f->object);if(base>=0){int x=f->x,y=f->y,z=f->z;render_particle_position(render_effects()+i,f->object,&x,&y,&z);sprite(base-f->mesh,x,y,z,f->object==90?f->shade:0);}}
     }
@@ -1035,6 +1122,8 @@ static void render(void){
 static void update_eye(void){
     const Tr2Camera *previous=render_tick && !memcmp(&camera,&render_camera_current,sizeof camera)?&render_camera_previous:&camera;
     double t=render_alpha,target[3];
+    view_fov=(previous_fov+t*(current_fov-previous_fov))*(360.0/65536);
+    view_roll=(previous_roll+t*tr2_word(current_roll-previous_roll))*(360.0/65536);
     eye[0]=previous->position.x+t*(camera.position.x-previous->position.x);
     eye[1]=previous->position.y+previous->shift+t*((double)camera.position.y+camera.shift-previous->position.y-previous->shift);
     eye[2]=previous->position.z+t*(camera.position.z-previous->position.z);
@@ -1045,6 +1134,7 @@ static void update_eye(void){
     heading=atan2(dx,dz);pitch=atan2(dy,sqrt(dx*dx+dz*dz));
 }
 void tr2_home_close(void){
+    quick_draw=0;
     tomb_render_surface_free(&resolution_surface);
     tomb_render_surface_free(&aspect_surface);
     tr2_audio_close();
@@ -1093,7 +1183,7 @@ static void cut_actor(Tr2Actor *a,int id,Tr2Object *object){
         if(effect==26)hair_state.ready=0;
     }
 }
-static int open_session(const char *root,const char *filename,int level_index,const char *slot,int flags,int item,int extra,int carry,unsigned options){
+static int open_session(const char *root,const char *filename,int level_index,const char *slot,int flags,int item,int extra,int carry,unsigned options,const unsigned char choices[7]){
     char path[MAX_PATH],error[256];
     snprintf(path,sizeof path,"%s/sine.bin",root);if(!tr2_math_load(path))return 0;
     snprintf(path,sizeof path,"%s/%s",root,filename);Tr2Level *candidate=tr2_load(path,error,sizeof error);
@@ -1115,7 +1205,9 @@ static int open_session(const char *root,const char *filename,int level_index,co
             if(!tr2_arrival_start(candidate,&fresh,&start,extra)){tr2_world_free(&fresh);tr2_free(candidate);return 0;}
         }
     }
+    if(choices && !carry && !slot && !cinema)tr2_start_weapons(&fresh,choices);
     candidate->custom=(Tr2Customisation){.options=options,.sidearm=fresh.inventory->count[135]?1:0,.last_drawn=fresh.combat->last_weapon};
+    if(fresh.combat->weapon==2 || fresh.combat->weapon==3)candidate->custom.sidearm=fresh.combat->weapon;
     if((cinema || carry) && (carry_custom.options&TR2_CONSISTENT_WEAPONS) && !(flags&1)){
         candidate->custom=carry_custom;
         candidate->custom.switch_pending=candidate->custom.campaign_home=0;
@@ -1126,8 +1218,11 @@ static int open_session(const char *root,const char *filename,int level_index,co
         *fresh.start_combat=*fresh.combat;
     }
     if(slot && !tr2_load_save(slot,candidate,&fresh,&start,&supply,&totals)){tr2_world_free(&fresh);tr2_free(candidate);return 0;}
-    tr2_home_close();prior_totals=totals;campaign_home_exit=0;level=candidate;world=fresh;actor=start;water=supply;cutscene=cinema;cut_pistol_hands=0;level->world=&world;world.lara=&actor;
+    tr2_home_close();session_level=level_index;prior_totals=totals;campaign_home_exit=0;level=candidate;world=fresh;actor=start;water=supply;cutscene=cinema;cut_pistol_hands=0;level->world=&world;world.lara=&actor;
     cut_lara_swapped=0;campaign_home_exit=level->custom.campaign_home;autosave_due=0;autosave_inventory(1);
+    const char *basename=strrchr(filename,'/');basename=basename?basename+1:filename;
+    const char *backslash=strrchr(basename,'\\');
+    cut1_laptop=cinema && !_stricmp(backslash?backslash+1:basename,"CUT1.TR2");
     if(cinema){
         cut_meshes=malloc(level->mesh_offsets.count*sizeof *cut_meshes);
         if(!cut_meshes){tr2_home_close();return 0;}
@@ -1146,7 +1241,7 @@ static int open_session(const char *root,const char *filename,int level_index,co
     if(cutscene || world.cinematic_active)tr2_world_camera(level,&world,&actor,&camera,&look);else for(int i=0;i<60;i++)tr2_camera_tick(level,&actor,&camera);
     mesh_radius=calloc(level->mesh_offsets.count,sizeof *mesh_radius);
     if(!mesh_radius){tr2_home_close();return 0;}
-    if(level->custom.options&TR2_CONSISTENT_WEAPONS){
+    if(level_index==0 || level_index==18 || (level->custom.options&TR2_CONSISTENT_WEAPONS)){
         for(int gun=1;gun<=7;gun++)if(!tr2_model(level,tr2_weapon_model(gun))){
             snprintf(path,sizeof path,"%s/DATA/WALL.TR2",root);
             weapon_assets=tr2_load(path,error,sizeof error);
@@ -1155,6 +1250,7 @@ static int open_session(const char *root,const char *filename,int level_index,co
             break;
         }
     }
+    level->weapon_donor=weapon_assets;
     update_eye();init_geometry();braid_update();
     render_count=render_hair()+2;render_entries=calloc(render_count,sizeof *render_entries);
     if(!render_entries){tr2_home_close();return 0;}tr2_home_interpolation_reset();
@@ -1163,9 +1259,9 @@ static int open_session(const char *root,const char *filename,int level_index,co
     fprintf(stderr,"TR2B: %s, Lara item %d room %d at %d,%d,%d yaw %d\n",filename,level->lara,actor.room,actor.x,actor.y,actor.z,actor.yaw);
     return 1;
 }
-int tr2_level_open(const char *root,const char *filename,int index){return open_session(root,filename,index,NULL,0,0,0,0,index<0?carry_custom.options:0);}
-int tr2_level_start(const char *root,const char *filename,int index,int flags,int item,int extra,int campaign_home,int carry,unsigned options){
-    if(!open_session(root,filename,index,NULL,flags,item,extra,carry,options))return 0;
+int tr2_level_open(const char *root,const char *filename,int index){return open_session(root,filename,index,NULL,0,0,0,0,index<0?carry_custom.options:0,NULL);}
+int tr2_level_start(const char *root,const char *filename,int index,int flags,int item,int extra,int campaign_home,int carry,unsigned options,const unsigned char choices[7]){
+    if(!open_session(root,filename,index,NULL,flags,item,extra,carry,options,choices))return 0;
     level->custom.campaign_home=campaign_home_exit=index==0 && campaign_home;
     return 1;
 }
@@ -1175,7 +1271,7 @@ static int on_home_gate_tiles(const Tr2Actor *a){
         a->y==2560 && a->control.health>0 && !(a->control.flags&8);
 }
 int tr2_level_save(const char *path,int index){return tr2_slot_write(path,index,level,&world,&actor,&water,&prior_totals);}
-int tr2_level_restore(const char *root,const char *file,int index,const char *path){return open_session(root,file,index,path,0,0,0,0,0);}
+int tr2_level_restore(const char *root,const char *file,int index,const char *path){return open_session(root,file,index,path,0,0,0,0,0,NULL);}
 void tr2_home_update(double seconds,uint32_t input){
     if(!level)return;
     if((input&(TR2_FORWARD|TR2_BACK))==(TR2_FORWARD|TR2_BACK))input|=TR2_ROLL;
@@ -1201,6 +1297,7 @@ void tr2_home_update(double seconds,uint32_t input){
         /* ExtraLaraControl 428830 resets the death counter before AnimateLara. */
         int hold_creature_death=actor.extra_animation && (actor.control.current==2 || actor.control.current==3) &&
             actor.control.frame<tr2_i16(level->animations.data+actor.control.animation*32+18)-30;
+        if(quick_draw){movement|=32;quick_draw=0;}
         tr2_player_tick(level,&actor,&water,movement);tr2_world_view_tick(level,&world,&actor,movement,&look);
         autosave_inventory(0);
         if(level->custom.switch_pending && !actor.extra_animation && actor.control.current!=40 && actor.control.current!=41){
@@ -1371,6 +1468,21 @@ int tr2_home_check(int moved){
     if(!level || level->lara!=8 || !camera.initialized || actor.control.health<=0)return 0;
     if(!moved)return actor.room==16 && actor.x==19968 && actor.y==2560 && actor.z==95744 && actor.yaw==-32768;
     return actor.room>=0 && (unsigned)actor.room<level->room_count && actor.z!=95744 && isfinite(heading) && isfinite(pitch);
+}
+int tr2_rig_water_view_test(void){
+    /* Look west from the starting cell, through the bars under the seaplane. */
+    int cinematic=world.cinematic_active,distance=draw_distance_setting,style=water_style;
+    eye[0]=48384;eye[1]=-2260;eye[2]=91500;heading=-PI/2;pitch=.06;render_camera_room=4;
+    world.cinematic_active=0;draw_distance_setting=0;
+    int ok=1;
+    for(water_style=0;water_style<=1;water_style++){
+        render();
+        GLubyte pixels[4*4*4];glReadPixels(width/2,height*343/720,4,4,GL_RGBA,GL_UNSIGNED_BYTE,pixels);
+        for(int i=0;i<16;i++)if(pixels[i*4]>100 && pixels[i*4]>pixels[i*4+2]+50)ok=0;
+    }
+    world.cinematic_active=cinematic;draw_distance_setting=distance;water_style=style;update_eye();
+    fprintf(stderr,"TR2B Offshore Rig water at Original distance, PC and PS1 styles: %s\n",ok?"PASS":"FAIL");
+    return ok;
 }
 int tr2_home_water_test(void){
     /* PC ASSAULT has 25 pool overlay quads on each side of the boundary. */
@@ -1564,7 +1676,29 @@ int tr2_cut_swap_test(void){
     }
     return 0;
 }
+int tr2_cut_camera_test(int frame,int cut){
+    if(world.cinematic_frame!=frame || fabs(render_alpha-.5)>1e-5)return 0;
+    Tr2Camera prior=camera;
+    int index=frame-2,fov,roll;
+    if(!tr2_cinematic_camera(level,&world.cinematic_origin,world.cinematic_yaw,&index,&prior,&fov,&roll))return 0;
+    double fraction=cut?1:.5;
+    return fabs(eye[0]-(prior.position.x+fraction*(camera.position.x-prior.position.x)))<.01 &&
+        fabs(eye[1]-(prior.position.y+fraction*(camera.position.y-prior.position.y)))<.01 &&
+        fabs(eye[2]-(prior.position.z+fraction*(camera.position.z-prior.position.z)))<.01 &&
+        fabs(view_fov-(fov+fraction*(world.cinematic_fov-fov))*360/65536)<.0001;
+}
 int tr2_cut_actor_test(void){
+    /* Check the first picture's opening motion, its display position, and
+       the first instantaneous exchange in the authored laptop animation. */
+    for(unsigned i=0;i<world.count;i++)if(world.objects[i].id==128){
+        const TombRenderTrack *pose=&render_entries[1+i].pose;
+        int frame=world.objects[i].pose.control.frame;
+        if(frame==2184 && !memcmp(pose->nodes[1].previous,pose->nodes[1].current,sizeof pose->nodes[1].current))return 0;
+        if(frame==2188 && fabs(pose->nodes[1].current[12]+779)>.1)return 0;
+        if(frame==2204)for(int panel=1;panel<=2;panel++)
+            if(memcmp(pose->nodes[panel].previous,pose->nodes[panel].current,sizeof pose->nodes[panel].current))return 0;
+    }
+    if(world.cinematic_frame==318 && (!render_entries[0].pose.reset || !render_entries[0].root.reset))return 0;
     for(unsigned i=0;i<world.count;i++){
         const Tr2Object *o=world.objects+i;
         if(o->id!=123)continue;
@@ -1582,7 +1716,7 @@ int tr2_cut1_pistols_test(int frame){
     if(!cutscene || !lara || !pistol || actor.control.frame!=frame)return 0;
     unsigned base=tr2_u16(lara+6),gun=tr2_u16(pistol+6),hand=frame>=319 && frame<1977?gun:base;
     return model_mesh(0,base,10,0)==hand+10 && model_mesh(0,base,13,0)==hand+13 &&
-        model_mesh(0,base,1,0)==gun+1 && model_mesh(0,base,4,0)==gun+4;
+        model_mesh(0,base,1,0)==(hand==gun?base:gun)+1 && model_mesh(0,base,4,0)==(hand==gun?base:gun)+4;
 }
 int tr2_home_gate_test(int campaign){
     Tr2Actor saved=actor;
@@ -1662,6 +1796,89 @@ int tr2_creature_contact_test(const int *ids,unsigned count){
 static Tr2Object *test_placed(int id){
     for(unsigned i=0;i<world.count;i++)if(world.objects[i].id==id)return world.objects+i;
     return NULL;
+}
+/* Compare the recorded rotations to the authored weapon frame, including
+   the separate left and right frame counters in the executable's pistol path. */
+static int weapon_pose_test(void){
+    const Tr2Combat *g=world.combat;
+    int dual=g->weapon>=1 && g->weapon<=3;
+    if(actor.gun_status<2 || actor.gun_status>4 || (!dual && !g->rifle_active))return 1;
+    const Tr2Level *assets=tr2_weapon_assets(level,dual?1:tr2_weapon_model(g->weapon));
+    const uint8_t *model_data=tr2_model(assets,dual?1:tr2_weapon_model(g->weapon));
+    if(!model_data)return 0;
+    Tr2Look aiming;tr2_combat_look_pose(&actor,g,&look,&aiming);
+    int upper=g->weapon==5 && (g->rifle.control.current==0 || g->rifle.control.current==2 || g->rifle.control.current==4);
+    for(int joint=upper?7:8;joint<=(upper?14:13);joint++){
+        int arm=joint>=11?0:1;
+        int frame=dual?g->arms[arm].frame:g->rifle.control.frame;
+        int animation=dual?tr2_u16(model_data+16)+(frame>=5)+(frame>=13)+(frame>=24):g->rifle.control.animation;
+        const uint8_t *an=assets->animations.data+32*animation;
+        const uint8_t *rot=assets->frames.data+tr2_u32(an)+18+(frame-tr2_i16(an+16))*an[5]*2;
+        for(int n=0;n<joint;n++)rot+=tr2_u16(rot)>>14?2:4;
+        glPushMatrix();glLoadIdentity();
+        const TombRenderNode *node=&render_entries[0].pose.nodes[joint];
+        const float *actual=node->current;
+        if(dual && (joint==8 || joint==11)){
+            actual=node->world;
+            glRotatef(actor.yaw*(360.f/65536),0,1,0);glRotatef(actor.pitch*(360.f/65536),1,0,0);glRotatef(actor.control.roll*(360.f/65536),0,0,1);
+            glRotatef(g->arms[arm].aim.yaw*(360.f/65536),0,1,0);glRotatef(g->arms[arm].aim.pitch*(360.f/65536),1,0,0);glRotatef(g->arms[arm].aim.roll*(360.f/65536),0,0,1);
+        }
+        rotate_frame(&rot,assets->frames.data+assets->frames.count*2);
+        if(joint==7 || joint==14){
+            glRotatef((joint==7?aiming.torso_yaw:aiming.yaw)*(360.f/65536),0,1,0);
+            glRotatef((joint==7?aiming.torso_pitch:aiming.pitch)*(360.f/65536),1,0,0);
+        }
+        GLfloat expected[16];glGetFloatv(GL_MODELVIEW_MATRIX,expected);glPopMatrix();
+        for(int col=0;col<3;col++)for(int k=0;k<3;k++)if(fabs(actual[col*4+k]-expected[col*4+k])>.003){
+            fprintf(stderr,"weapon pose mismatch: gun %d, status %d, frame %d, joint %d\n",g->weapon,actor.gun_status,frame,joint);return 0;
+        }
+    }
+    return 1;
+}
+int tr2_home_weapon_test(void){
+    for(int tick=0;tick<1500 && actor.extra_animation;tick++)tr2_home_update(1.0/30,0);
+    int holstered=level->custom.sidearm;
+    for(int row=0;row<7;row++){
+        int id=tr2_weapon_items[row],gun=tr2_inventory_weapon(id);
+        tr2_level_give(id);
+        tr2_level_use(id,0);
+        for(int tick=0;tick<180 && actor.gun_status!=4;tick++){tr2_home_update(1.0/30,tick?0:32);if(!weapon_pose_test())return 0;}
+        if(actor.gun_status!=4 || world.combat->weapon!=gun){fprintf(stderr,"draw test gun %d status %d health %d extra %d\n",gun,actor.gun_status,actor.control.health,actor.extra_animation);return 0;}
+        tr2_home_render(width,height);
+        if(gun<=3)holstered=gun;
+        unsigned base=tr2_u16(tr2_model(level,0)+6);
+        for(int thigh=1;thigh<=4;thigh+=3){
+            unsigned expected=base+thigh;
+            if(gun>=4 && holstered)expected=weapon_mesh(tr2_weapon_model(holstered),thigh,expected);
+            if(render_entries[0].pose.nodes[thigh].identity!=(int)expected){
+                fprintf(stderr,"holster mesh mismatch: gun %d, sidearm %d, thigh %d\n",gun,holstered,thigh);return 0;
+            }
+        }
+        int shots=world.combat->shots;
+        for(int tick=0;tick<120 && world.combat->shots==shots;tick++){tr2_home_update(1.0/30,TR2_ACTION);if(!weapon_pose_test())return 0;}
+        if(world.combat->shots==shots || glGetError()!=GL_NO_ERROR){fprintf(stderr,"fire test gun %d health %d\n",gun,actor.control.health);return 0;}
+        tr2_home_render(width,height);
+        if(gun==5 || gun==7){
+            /* Exercise the alternate weapon state machine independently of
+               movement/collision, holding the running or swimming input state. */
+            Tr2Actor saved=actor;
+            if(gun==5)actor.speed=32;else actor.control.water_status=1;
+            int alternate_shot=0;
+            for(int tick=0;tick<180 && !alternate_shot;tick++){
+                actor.event_count=0;
+                int before=world.combat->shots;
+                tr2_combat_view_tick(level,&world,&actor,tick<45?0:TR2_ACTION,&look);
+                render_capture();
+                if(!weapon_pose_test())return 0;
+                alternate_shot=world.combat->rifle.control.current==8 && world.combat->shots>before;
+            }
+            actor=saved;
+            if(!alternate_shot)return 0;
+        }
+        for(int tick=0;tick<180 && actor.gun_status;tick++){tr2_home_update(1.0/30,tick?0:32);if(!weapon_pose_test())return 0;}
+        if(actor.gun_status || glGetError()!=GL_NO_ERROR){fprintf(stderr,"holster test gun %d status %d health %d\n",gun,actor.gun_status,actor.control.health);return 0;}
+    }
+    return 1;
 }
 int tr2_unarmed_shower_test(void){
     if(!world.cinematic_active || !actor.extra_animation || actor.control.current!=10 ||

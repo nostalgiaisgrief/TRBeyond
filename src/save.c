@@ -123,6 +123,9 @@ int tomb_save_crystal_find(const TombPlaytest *p,const TombObjects *w){
 int tomb_save_write(const char *path,int number,const TombPlaytest *p,const TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline){
  return p && !(p->gameplay_options&TOMB_SAVE_CRYSTALS) && write_state(path,number,p,w,c,baseline);
 }
+int tomb_save_level_start_write(const char *path,int number,const TombPlaytest *p,const TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline){
+ return p && (p->gameplay_options&TOMB_SAVE_CRYSTALS) && write_state(path,number,p,w,c,baseline);
+}
 int tomb_save_crystal_write(const char *path,int number,const TombPlaytest *p,TombObjects *w,const TombFollowCamera *c,const TombInventory *baseline,int item){
  if(item<0 || tomb_save_crystal_find(p,w)!=item)return 0;
  TombObject *o=w->items+item;TombObject before=*o;

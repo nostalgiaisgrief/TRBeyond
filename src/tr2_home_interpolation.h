@@ -4,6 +4,7 @@ static void render_begin_entry(size_t index,const Tr2Actor *a,int id){
     float origin[3]={(float)a->x,(float)a->y,(float)a->z};
     tomb_render_begin(&render_entry->pose,render_tick,origin,a->room);
     tomb_render_begin(&render_entry->root,render_tick,origin,a->room);
+    if(render_shot_change)render_entry->pose.reset=render_entry->root.reset=1;
     /* Push-block quadrant alignment is a discrete gameplay snap. */
     if(id>=67 && id<=70 && render_entry->root.yaw!=a->yaw)render_entry->pose.reset=render_entry->root.reset=1;
     render_entry->root.yaw=a->yaw;
@@ -27,9 +28,29 @@ static void render_capture_model(const Tr2Actor *a,int id,uint64_t mask,int trac
     const uint8_t *animation=level->animations.data+a->control.animation*32;
     model((unsigned)id,a->control.animation,a->control.frame-tr2_i16(animation+16),a->x,a->y,a->z,a->yaw*(360.0/65536),mask,a->pitch,a->control.roll,track);
 }
+/* Camera records have no shot marker. A step much larger than the travel
+   on both sides is a cut, including a stationary camera changing its target. */
+static int cinematic_step(const uint8_t *frame,int channel){
+    int delta=tr2_i16(frame+channel*2)-tr2_i16(frame-16+channel*2);
+    return abs(channel==7?tr2_word(delta):delta);
+}
+static int cinematic_cut(int frame){
+    if(frame<=0 || (unsigned)frame>=level->cinematic.count)return 1;
+    const uint8_t *p=level->cinematic.data+frame*16;
+    for(int k=0;k<8;k++){
+        int before=frame>1?cinematic_step(p-16,k):0;
+        int after=(unsigned)(frame+1)<level->cinematic.count?cinematic_step(p+16,k):0;
+        int step=cinematic_step(p,k);
+        if(step>(k<6?32:128) && step>4*(before>after?before:after))return 1;
+    }
+    return 0;
+}
 static void render_capture(void){
     if(!render_entries)return;
     render_tick++;render_recording=1;glMatrixMode(GL_MODELVIEW);glPushMatrix();
+    int frame=world.cinematic_active?world.cinematic_frame:-1;
+    render_shot_change=(world.cinematic_active || render_cine_frame>=0) &&
+        (frame<0 || render_cine_frame<0 || frame!=render_cine_frame+1 || cinematic_cut(frame));
     memcpy(render_lights[0],render_lights[1],sizeof render_lights[0]);render_light_count[0]=render_light_count[1];
     memcpy(render_lights[1],world.hazards->lights,sizeof render_lights[1]);render_light_count[1]=world.hazards->light_count;
     if(render_tick==1){memcpy(render_lights[0],render_lights[1],sizeof render_lights[0]);render_light_count[0]=render_light_count[1];}
@@ -38,6 +59,17 @@ static void render_capture(void){
         const Tr2Object *o=world.objects+i;if((int)i==level->lara || o->listed_room<0 || o->status==3 || (o->flags&0x8000))continue;
         render_begin_entry(1+i,&o->pose,o->id);model_creature=world.creatures+i;
         render_capture_model(&o->pose,o->id==13 && o->snow.drive.armed?51:o->id,tr2_object_mesh_mask(o),(o->id==13 || o->id==51)?o->effect_counter:0);model_creature=NULL;
+        if(cut1_laptop && o->id==128){
+            /* CUT1 flips picture panels by half a turn to exchange slides.
+               Keep the smaller authored turns that bring the first slide in. */
+            for(int panel=1;panel<=6;panel++){
+                TombRenderNode *n=&render_entry->pose.nodes[panel];
+                float trace=0;
+                for(int col=0;col<3;col++)for(int row=0;row<3;row++)
+                    trace+=n->previous[col*4+row]*n->current[col*4+row];
+                if(trace<-.99f)memcpy(n->previous,n->current,sizeof n->previous);
+            }
+        }
         if(o->id==22 || o->id==218){
             const uint8_t *front=tr2_model(level,o->id),*rear=tr2_model(level,o->id+1);
             if(front && rear){
@@ -67,9 +99,18 @@ static void render_capture(void){
     glPopMatrix();render_entry=NULL;render_recording=0;
     render_camera_previous=render_camera_current;render_camera_current=camera;
     int key=world.camera_active==1 || world.camera_active==5?world.camera_index:-1;
-    int cut=render_tick==1 || render_entries[0].root.reset || render_flip!=world.flip_status ||
-        key!=render_camera_key || world.camera_target!=render_camera_target || world.cinematic_active;
-    if(cut)render_camera_previous=render_camera_current;
+    int cut=render_tick==1 || render_flip!=world.flip_status;
+    if(world.cinematic_active){
+        cut|=render_shot_change;
+    }else{
+        cut|=render_cine_frame>=0 || render_entries[0].root.reset ||
+            key!=render_camera_key || world.camera_target!=render_camera_target;
+    }
+    previous_fov=current_fov;previous_roll=current_roll;
+    current_fov=world.cinematic_fov>0?world.cinematic_fov:14564;
+    current_roll=world.cinematic_roll;
+    if(cut){render_camera_previous=render_camera_current;previous_fov=current_fov;previous_roll=current_roll;}
+    render_cine_frame=frame;
     render_camera_key=key;render_camera_target=world.camera_target;render_flip=world.flip_status;
 }
 /* Reset presentation history without advancing the simulation or emitting audio. */

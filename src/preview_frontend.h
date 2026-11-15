@@ -76,7 +76,7 @@ static void frontend_backdrop(void){
 }
 static const char *frontend_name(int id){switch(id){case 71:case 81:return "Game";case 73:return title_mode?"Lara's Home":"Customisation";case 95:return "Detail Levels";case 96:return "Sound";case 97:return "Controls";default:return tomb_inventory_level_name(level_number,id);}}
 /* Title always offers Autosave; gameplay offers it only while enabled. */
-static int frontend_save_blocked(void){return !title_mode && (play.gameplay_options&TOMB_SAVE_CRYSTALS) && crystal_pending<0;}
+static int frontend_save_blocked(void){return !title_mode && (play.gameplay_options&TOMB_SAVE_CRYSTALS) && crystal_pending<0 && !level_start_save;}
 static int frontend_autosave_visible(int page){return page==0 && (title_mode || ((play.gameplay_options&TOMB_AUTOSAVE) && !(play.gameplay_options&TOMB_SAVE_CRYSTALS)));}
 static int frontend_slot_count(int page){return TOMB_MANUAL_SLOTS+!!frontend_autosave_visible(page);}
 static int frontend_slot(int page,int row){return frontend_autosave_visible(page)?(row==0?16:row-1):row;}
@@ -115,7 +115,7 @@ static void frontend_title(void){
 static int frontend_home_complete(void){
  if(level_number!=0 || title_mode || !play.gym.complete)return 0;
  accumulator=0;
- if(home_from_level_select){int mode=play.shooter.mode;uint32_t options=play.gameplay_options;if(!load_game_level(1,0,NULL))frontend_title();else{tomb_gameplay_start(&play,options);tomb_shooter_start(&play,mode);level_inventory=play.inventory;}}
+ if(home_from_level_select){int mode=play.shooter.mode;uint32_t options=play.gameplay_options&~TOMB_START_WEAPON_FLAGS;if(!load_game_level(1,0,NULL))frontend_title();else{tomb_gameplay_start(&play,options);tomb_shooter_start(&play,mode);level_inventory=play.inventory;}}
  else frontend_title();
  return 1;
 }
@@ -140,8 +140,21 @@ static void frontend_execute(int id){
  char path[MAX_PATH];int action=menu_action;menu_action=0;
  if(id==73){if(title_mode)load_game_level(0,0,NULL);else if(action==4){if(level_number==0)play.gym.complete=1;else objects.progress->complete=1;}return;}
  if(action==1){int slot=frontend_slot(0,slot_current);save_path(path,slot);if(!load_game_level(save_levels[slot],0,path)){inventory_begin();options_ring=1;tomb_ring_init_options(&inventory_ring,title_mode?1:2);}}
- else if(action==2){if(title_mode || (level_number==0 && !passport_save)){if(!load_game_level(new_game_level,0,NULL)){custom_campaign_id=0;inventory_begin();options_ring=1;tomb_ring_init_options(&inventory_ring,title_mode?1:2);}else {home_from_level_select=level_number==0;tomb_gameplay_start(&play,new_game_options);tomb_shooter_start(&play,new_game_mode);tomb_vr_reset(&vr,&play);if(new_game_mode!=TOMB_MODE_VR && xr.instance)xr_close();camera.ready=0;update_camera(1.0/30);level_inventory=play.inventory;tomb_pickups_replace_owned(&objects,&play.inventory);}}else{save_path(path,slot_current);int saved=crystal_pending>=0?tomb_save_crystal_write(path,level_number,&play,&objects,&camera,&level_inventory,crystal_pending):tomb_save_write(path,level_number,&play,&objects,&camera,&level_inventory);crystal_pending=-1;if(!saved){inventory_begin();strcpy(menu_error,"Could not save game");}}}
+ else if(action==2){if(title_mode || (level_number==0 && !passport_save)){if(!load_game_level(new_game_level,0,NULL)){custom_campaign_id=0;inventory_begin();options_ring=1;tomb_ring_init_options(&inventory_ring,title_mode?1:2);}else {home_from_level_select=level_number==0;tomb_gameplay_start(&play,new_game_options);tomb_shooter_start(&play,new_game_mode);tomb_vr_reset(&vr,&play);if(new_game_mode!=TOMB_MODE_VR && xr.instance)xr_close();camera.ready=0;update_camera(1.0/30);level_inventory=play.inventory;tomb_pickups_replace_owned(&objects,&play.inventory);}}else{
+   save_path(path,slot_current);
+   int saved;
+   if(level_start_save)saved=tomb_save_level_start_write(path,level_number,&play,&objects,&camera,&level_inventory);
+   else if(crystal_pending>=0)saved=tomb_save_crystal_write(path,level_number,&play,&objects,&camera,&level_inventory,crystal_pending);
+   else saved=tomb_save_write(path,level_number,&play,&objects,&camera,&level_inventory);
+   crystal_pending=-1;
+   if(saved)level_start_save=0;
+   else{
+    if(level_start_save)open_save_passport(-1,1);else inventory_begin();
+    strcpy(menu_error,"Could not save game");
+   }
+  }}
  else if(action==3){if(title_mode)running=0;else frontend_title();}
+ else level_start_save=0;
 }
 static int customise_page;
 /* Actions: -1 cycles gun power, -2 skips the level, 1..4 grant weapons. */
@@ -153,7 +166,8 @@ static const FrontendGameplayOption customise_quality[]={
  {"Show Level Name",TOMB_SHOW_LEVEL_NAME,0},{"Skip Stats Screen",TOMB_SKIP_STATS,0}};
 static const FrontendGameplayOption customise_cheats_title[]={
  {"Invincibility",TOMB_INVINCIBLE,0},{"Infinite Ammo",TOMB_INFINITE_AMMO,0},{"Gun Power",0,-1},
- {"Start with Shotgun",TOMB_START_SHOTGUN,0},{"Start with Magnums",TOMB_START_MAGNUMS,0},{"Start with Uzis",TOMB_START_UZIS,0}};
+ {"Start with Pistols",TOMB_START_PISTOLS,1},{"Start with Shotgun",TOMB_START_SHOTGUN,2},
+ {"Start with Magnums",TOMB_START_MAGNUMS,3},{"Start with Uzis",TOMB_START_UZIS,4}};
 static const FrontendGameplayOption customise_cheats_game[]={
  {"Skip Level",0,-2},{"Invincibility",TOMB_INVINCIBLE,0},{"Infinite Ammo",TOMB_INFINITE_AMMO,0},{"Gun Power",0,-1},
  {"Give Pistol",0,1},{"Give Shotgun",0,2},{"Give Magnums",0,3},{"Give Uzis",0,4}};
@@ -167,7 +181,7 @@ static const FrontendGameplayOption *frontend_gameplay_options(int starting,int 
  if(starting && menu_role==1 && customise_page==2){*count=2;return customise_fun;}
  if(customise_page==0){*count=starting?6:5;return customise_quality+(starting?0:1);}
  if(customise_page==2){*count=4;return customise_fun;}
- *count=starting?6:8;return starting?customise_cheats_title:customise_cheats_game;
+ *count=starting?(int)(sizeof customise_cheats_title/sizeof *customise_cheats_title):8;return starting?customise_cheats_title:customise_cheats_game;
 }
 static const char *gun_power_names[]={"1x","2x","5x","One Shot Kill"};
 static void frontend_gun_power(uint32_t *options,unsigned input){
@@ -195,7 +209,14 @@ static void frontend_gameplay_input(int starting,int *row,unsigned input){
  if(!(input&(TOMB_RING_SELECT|TOMB_RING_LEFT|TOMB_RING_RIGHT)))return;
  const FrontendGameplayOption *o=options+*row;uint32_t *bits=starting?&new_game_options:&play.gameplay_options;
  if(o->action==-1)frontend_gun_power(bits,input);
- else if(o->bit){
+ else if(starting && o->action>0){
+  int slot=o->action-1;
+  int choice=(tomb_start_weapon_choice(*bits,slot)+((input&TOMB_RING_LEFT)?2:1))%3;
+  unsigned off=TOMB_START_OFF_BASE<<slot;
+  *bits&=~(o->bit|off);
+  if(choice==1)*bits|=o->bit;
+  if(choice==2)*bits|=off;
+ }else if(o->bit){
   if(o->bit==TOMB_AUTOSAVE && (*bits&TOMB_SAVE_CRYSTALS))return;
   *bits^=o->bit;
   if(!starting && o->bit==TOMB_DOUBLE_JUMP_SWIM && !(*bits&TOMB_DOUBLE_JUMP_SWIM)){play.swim_override=0;play.swim_tap_ticks=0;}
@@ -314,7 +335,7 @@ static int frontend_input(unsigned *input){
   if(slot_menu){
    if(*input&16 && slot_current>0)slot_current--;if(*input&32 && slot_current<(frontend_slot_count(page)-1))slot_current++;
    frontend_remember_slot(page);
-   if(*input&TOMB_RING_BACK){slot_menu=0;menu_error[0]=0;if(crystal_pending>=0){crystal_pending=-1;menu_action=0;tomb_ring_finish_item(r,71);}}
+   if(*input&TOMB_RING_BACK){slot_menu=0;menu_error[0]=0;if(crystal_pending>=0 || level_start_save){crystal_pending=-1;menu_action=0;tomb_ring_finish_item(r,71);}}
   else if(*input&TOMB_RING_SELECT){if(page==1 || save_levels[frontend_slot(page,slot_current)]>=0){menu_action=page+1;slot_menu=0;tomb_ring_finish_item(r,71);}else strcpy(menu_error,"Empty Slot");}
    *input=0;return 0;
   }
@@ -488,7 +509,10 @@ static void frontend_gameplay_overlay(int starting,int selected){
   char text[100];
   if(row==count)snprintf(text,sizeof text,"Start Game");
   else if(options[row].action==-1)snprintf(text,sizeof text,"Gun Power: %s",gun_power_names[(bits&TOMB_GUN_POWER_MASK)>>TOMB_GUN_POWER_SHIFT]);
-  else if(options[row].bit==TOMB_SAVE_CRYSTALS)snprintf(text,sizeof text,"Saves: %s",bits&TOMB_SAVE_CRYSTALS?"Crystals":"Unlimited");
+  else if(starting && options[row].action>0){
+   static const char *const choices[]={"Default","On","Off"};
+   snprintf(text,sizeof text,"%s: %s",options[row].name,choices[tomb_start_weapon_choice(bits,options[row].action-1)]);
+  }else if(options[row].bit==TOMB_SAVE_CRYSTALS)snprintf(text,sizeof text,"Saves: %s",bits&TOMB_SAVE_CRYSTALS?"Crystals":"Unlimited");
   else if(options[row].bit==TOMB_AUTOSAVE && (bits&TOMB_SAVE_CRYSTALS))snprintf(text,sizeof text,"Autosave: Off");
   else if(options[row].bit)snprintf(text,sizeof text,"%s: %s",options[row].name,bits&options[row].bit?"On":"Off");
   else snprintf(text,sizeof text,"%s",options[row].name);

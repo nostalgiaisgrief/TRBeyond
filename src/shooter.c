@@ -154,7 +154,8 @@ void tomb_shooter_prepare_stop(TombPlaytest *p){
 }
 int tomb_fps_ready(const TombPlaytest *p){
     int state=p->lara.actor.current;
-    return p->lara.health>0 && !p->lara.water_status &&
+    int slot=p->requested_weapon==4?1:p->requested_weapon==2?2:p->requested_weapon==3?3:0;
+    return (p->inventory.counts[slot] || p->inventory.counts[0]) && p->lara.health>0 && !p->lara.water_status &&
         (state==0 || state==1 || state==2 || state==3 || state==5 || state==9 || state==16 || state==24 || state==28 || state==29 || state==32);
 }
 static uint32_t shooter_input(TombPlaytest *p,uint32_t raw,int fps);

@@ -14,6 +14,7 @@ from inspect_reference import Disc
 from prepare_movies import convert
 from convert_assets import convert_level, VERSION as ASSET_VERSION
 
+SPACE_PER_SOURCE_GIB = 3
 LEVELS = ['GYM', 'TITLE', 'CUT1', 'CUT2', 'CUT3', 'CUT4', 'LEVEL1', 'LEVEL2',
           'LEVEL3A', 'LEVEL3B', 'LEVEL4', 'LEVEL5', 'LEVEL6', 'LEVEL7A', 'LEVEL7B',
           'LEVEL8A', 'LEVEL8B', 'LEVEL8C', 'LEVEL10A', 'LEVEL10B', 'LEVEL10C']
@@ -372,7 +373,7 @@ def install_sources(selections, destination, payload, progress=lambda value, tex
         check_cancel(cancel)
         inspect_source(kind, selected)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    space = sum(10 if edition == 'PS1' else 2 for edition in editions)
+    space = SPACE_PER_SOURCE_GIB * len(editions)
     if shutil.disk_usage(destination.parent).free < space * 1024**3:
         raise ValueError(f'At least {space} GB of free space is required.')
     stage = Path(tempfile.mkdtemp(prefix='.trb-multi-', dir=destination.parent)).resolve()
@@ -421,8 +422,8 @@ def install(kind, selected, destination, payload, progress=lambda value, text: N
     plan = inspect_source(kind, selected)
     check_cancel(cancel)
     destination.parent.mkdir(parents=True, exist_ok=True)
-    if shutil.disk_usage(destination.parent).free < 2*1024**3:
-        raise ValueError('At least 2 GB of free space is required for extraction and movie conversion.')
+    if shutil.disk_usage(destination.parent).free < SPACE_PER_SOURCE_GIB * 1024**3:
+        raise ValueError(f'At least {SPACE_PER_SOURCE_GIB} GB of free space is required for extraction and movie conversion.')
     stage = Path(tempfile.mkdtemp(prefix='.trb-setup-', dir=destination.parent)).resolve()
     if stage.parent != destination.parent or not stage.name.startswith('.trb-setup-'):
         raise ValueError('Invalid staging directory.')

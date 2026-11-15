@@ -1,7 +1,7 @@
 /* Root EXE item motion 4223c3, 4234e0, 4254b0 and 425510. */
 #include <stdint.h>
 #include <stdlib.h>
-typedef struct {int yaw,lift,frame,delay,lowering,closed;} RingItem;
+typedef struct {int yaw,lift,frame,delay,lowering,closed;double display_frame;} RingItem;
 static int approach_zero(int value,int step){
     if(abs(value)<=step)return 0;
     return value+(value<0?step:-step);
@@ -23,6 +23,9 @@ static void move_item(RingItem *item,const MenuDescriptor *d,int focused,int ins
         if(item->delay)item->delay--;
         else{item->frame+=item->frame<frame?1:-1;item->delay=1;}
     }
+    /* Each authored frame normally occupies two 60 Hz menu ticks. */
+    double delta=item->frame-item->display_frame;
+    item->display_frame+=delta>.5?.5:delta<-.5?-.5:delta;
 }
 static int item_pose(const RingItem *item,int start,int end){
     if((end-start)/16==0)return start;

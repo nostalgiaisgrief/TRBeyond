@@ -4,17 +4,17 @@
 
 ## About
 
-A reconstruction of the 1996 Tomb Raider PC release for modern Windows.
+A reconstruction of the classic Tomb Raiders for modern Windows.
+Currently has excellent support for Tomb Raider 1, and priliminary support for Tomb Raider 2.
 
 I have two goals for this project.
 
-- A faithful recreation of the DOS version of Tomb Raider 1
-  - Since expanded to include visuals/sounds for DOS 3DFX and PlayStation 1.
-- Add some completely new optional ways to play Tomb Raider, such as completely different control schemes.
+- Faithful recreations of the 5 classic Tomb Raider games within one application.
+- Add new optional ways to play Tomb Raider, such as completely different control schemes.
 
 Essentially, this can be used as an authentic and easier way to play the PC version of Tomb Raider 1, or as a means to experience TR1 in brand new ways. Pick your flavour.
 
-Currently, there are four modes:
+Currently, there are four ways to play:
 
 - **Original**
    - The original, unaltered experience.
@@ -27,16 +27,32 @@ Currently, there are four modes:
 
 Plus a good chunk of customisation options ranging from Quality-of-Life improvements, to just pure fun.
 
-I'm not really one for modernising graphics, and the only visual tweaks have been around visual bugs that were present in the DOS version and which detracted from the experience.
+I'm not really one for modernising graphics, and the only visual tweaks have been around visual bugs that detracted from the experience.
 
 
 ## Installation
 
 1. Download the latest release from here: https://github.com/nostalgiaisgrief/TRBeyond/releases/latest
 2. Run the .exe.
-3. Follow the wizard to import game assets from your legally own versions.
-4. (Optional) Import game assets from both a DOS version and a PlayStation copy to allow you to mix-and-match your favourite elements from each. For example, DOS level data and its better credit screens, with PS1's audio cues and higher quality videos.
+3. Follow the wizard to import game assets from your legally own versions. TIP: Importing both PC and PS1 versions for a game will allow you to mix-and-match the best elements from each.
 
+## What's the plan?
+Here is the list of things currently on the plan.
+
+### Key
+✅ - Developed, tested
+🟨 - Developed, still in test
+🟧 - Under development
+⬜ - Development not started
+❎ - Not applicable
+
+| Game | Main Campaign | Expansion | PC Souce | PS1 Source | TPS | FPS | VR | Multiplayer |
+| --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
+| Tomb Raider | ✅ | ✅ | ✅ | ✅ | 🟨 | ✅ | 🟨 | 🟧 |
+| Tomb Raider II | 🟨 | 🟧 | ✅ | 🟧 | ⬜ | ⬜ | ⬜ | ⬜ |
+| Tomb Raider III | 🟧 | ⬜ | 🟧 | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Tomb Raider: TLR | 🟧 | ⬜ | 🟧 | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
+| Tomb Raider Chronicles | 🟧 | ❎ | 🟧 | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 
 ## What's Included?
 
@@ -128,26 +144,3 @@ Includes a bunch of optional customisation options which can be turned on and of
    ![](images/maxdraw2.png)
 - **Climb Anything in VR**
    - Pretty much what it says on the tin. Explore the levels like a rock climber.
-
-## What's the plan?
-Here is the list of things currently on the plan.
-
-- [x] Recreate the DOS version of Tomb Raider 1 for modern Windows
-- [x] Complete a playthrough of the Original mode
-- [x] Create a Third Person Shooter (TPS) Mode
-- [x] Refine TPS Mode
-- [ ] Complete a TPS playthrough
-- [x] Create a First Person Shooter (FPS) Mode
-- [x] Refine FPS Mode
-- [x] Complete a FPS playthrough
-- [x] Create a Virtual Reality (VR) Mode
-- [ ] Refine VR Mode
-- [ ] Complete a VR playthrough
-- [ ] Add VR Comfort options
-- [x] Add asset import from DOS and PS1 game discs
-- [x] Add asset import from Steam/GOG installations
-- [x] Add option for PS1 musical cues
-- [x] Add option for PS1 water colours
-- [x] Add option to use Save Crystals
-- [ ] Improve Save Crystal look
-- [ ] Multiplayer... maybe even with mixed modes!
