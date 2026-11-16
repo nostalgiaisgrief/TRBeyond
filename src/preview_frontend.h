@@ -407,15 +407,16 @@ static int frontend_input(unsigned *input){
 static int frontend_dark_index(const unsigned char *palette,const unsigned char *light,int index){
  return (palette[index*3]|palette[index*3+1]|palette[index*3+2])?light[index]:index;
 }
-static void frontend_inventory_backdrop(void){
- if(xr.panel_drawing)return;
+static void frontend_inventory_backdrop(int row){
+ /* The pause panel can reuse the scene already captured on the desktop pass. */
+ if(xr.panel_drawing && (!paused || inventory_open))return;
  int cinema=objects.progress->complete && cinematic_pixels;
  const unsigned char *palette=cinema?cinematic_palette:visual->palette;
  static GLuint texture;static unsigned char *indices,*rgb,*original;static int w,h,pw,ph,shade=-1,last_full=-1;
  int full_colour=settings_full_colour || visual->rgba_tiles!=NULL;
  GLint viewport[4];glGetIntegerv(GL_VIEWPORT,viewport);
  if(last_full!=full_colour){shade=-1;last_full=full_colour;}
- if(w!=viewport[2] || h!=viewport[3] || backdrop_dirty){
+ if(!xr.panel_drawing && (w!=viewport[2] || h!=viewport[3] || backdrop_dirty)){
   free(indices);free(rgb);free(original);original=NULL;w=viewport[2];h=viewport[3];pw=ph=1;while(pw<w)pw*=2;while(ph<h)ph*=2;
   indices=malloc((size_t)w*h);rgb=calloc((size_t)pw*ph,3);unsigned char *pixels=malloc((size_t)w*h*3);
   if(!indices || !rgb || !pixels){free(pixels);return;}
@@ -429,7 +430,6 @@ static void frontend_inventory_backdrop(void){
   glTexImage2D(GL_TEXTURE_2D,0,GL_RGB,pw,ph,0,GL_RGB,GL_UNSIGNED_BYTE,rgb);shade=-1;backdrop_dirty=0;
  }
  if(!indices || !rgb)return;
- int row=objects.progress->complete?24:backdrop_shade/2;
  glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,texture);
  if(shade!=row){const unsigned char *light=cinema?cinematic_light:level->file_data+level->item_parsed_bytes+row*256;
   if(full_colour && original){for(int y=0;y<h;y++)for(int x=0;x<w;x++)for(int c=0;c<3;c++)rgb[((size_t)y*pw+x)*3+c]=(unsigned char)(original[((size_t)y*w+x)*3+c]*(32-row)/16);}

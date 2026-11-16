@@ -44,7 +44,8 @@ enum CampaignScreen { PLAY, LOAD_SLOTS, SAVE_SLOTS, RESULTS, HOME_RESULTS, FINAL
 static enum CampaignScreen campaign_screen;
 #include "save_slots.h"
 static int slots_available,remembered_slot;
-static int slot_levels[TOMB_MANUAL_SLOTS+1],slot_cursor,slot_error;
+enum { SLOT_ROWS=10 };
+static int slot_levels[TOMB_MANUAL_SLOTS+1],slot_cursor,slot_first,slot_error;
 static void slot_path(char path[MAX_PATH],int slot){
  char folder[MAX_PATH];if(movie_test)snprintf(folder,sizeof folder,"build/tr2-slot-test");else snprintf(folder,sizeof folder,"%s/SAVES",asset_root);
  if(slot==TOMB_MANUAL_SLOTS){snprintf(path,MAX_PATH,"%s/autosave.sav",folder);return;}
@@ -65,9 +66,22 @@ static int scan_slots(void){
  int first=-1;for(int i=0;i<=TOMB_MANUAL_SLOTS;i++){char path[MAX_PATH];slot_path(path,i);slot_levels[i]=tr2_slot_level(path);if(slot_levels[i]>=(int)level_count)slot_levels[i]=-1;if(slot_levels[i]>=0 && (i==TOMB_MANUAL_SLOTS?autosave_visible():first<0))first=i;}
  slots_available=first>=0;return first;
 }
+static int slot_row(int slot,int with_auto){
+ return with_auto?(slot==TOMB_MANUAL_SLOTS?0:slot+1):slot;
+}
+static void scroll_to_slot(int with_auto){
+ int row=slot_row(slot_cursor,with_auto);
+ slot_first=clamp(slot_first,row-SLOT_ROWS+1,row);
+}
 static void open_slots(int saving){
  int first=scan_slots();if(!saving && first<0)return;
  campaign_screen=saving?SAVE_SLOTS:LOAD_SLOTS;slot_cursor=saving?(remembered_slot<TOMB_MANUAL_SLOTS?remembered_slot:0):(slot_levels[remembered_slot]>=0 && (remembered_slot<TOMB_MANUAL_SLOTS || autosave_visible())?remembered_slot:first);slot_error=0;
+ slot_first=0;scroll_to_slot(!saving && autosave_visible());
+}
+/* Requester (4257a0) and text background (440b60), in 640x480 coordinates. */
+static void statistics_frame(const Tr2Level *font,const GLuint *pages){
+ menu_frame(font,pages,166,267,308,166,1);
+ menu_frame(font,pages,168,269,304,16,1);
 }
 static void show_statistics(void){
  const Tr2World *w=tr2_level_world();Tr2Inventory saved;Tr2Combat combat;const Tr2Inventory *v=w->inventory;const Tr2Combat *g=w->combat;
@@ -89,10 +103,8 @@ static void show_statistics(void){
  snprintf(values[4],sizeof values[4],"%u",totals.hits);
  snprintf(values[5],sizeof values[5],"%u.%u",totals.medipacks/2,totals.medipacks&1?5:0);
  if(metres<1000)snprintf(values[6],sizeof values[6],"%um",metres);
- else snprintf(values[6],sizeof values[6],"%u.%02ukm",metres/1000,metres%1000/10);
- /* 426500 uses the same 304-wide, seven-row requester as Best Times. */
- menu_frame(title_level,title_textures,168,268,304,180,1);
- menu_frame(title_level,title_textures,170,270,300,24,1);
+ else snprintf(values[6],sizeof values[6],"%u.%02ukm",metres/1000,metres%100);
+ statistics_frame(title_level,title_textures);
  title_text(284,campaign_screen==FINAL_RESULTS?game_strings[75]:level_names[current_level],0);
  static const int labels[]={59,60,62,63,64,67,66};
  for(int row=0;row<7;row++){
@@ -109,7 +121,7 @@ static void show_best_times(void){
   /* 426320 / requester 4257a0: seven 18-pixel rows, width 304,
      bottom anchor -32. Original game strings 70, 71, 72. */
   const Tr2AssaultScores *scores=tr2_home_scores();int y=312;
-  menu_frame(level,textures,168,268,304,180,1);menu_frame(level,textures,170,270,300,24,1);
+  statistics_frame(level,textures);
   title_text(284,"BEST TIMES",0);
   if(!scores->times[0])title_text((float)y,"No Times Set",0);
   for(int i=title_choice;i<10 && i<title_choice+7 && scores->times[i];i++,y+=18){
@@ -119,9 +131,6 @@ static void show_best_times(void){
    menu_text_at(176,(float)y,label,0,0);menu_text_at(464,(float)y,time,0,-1);
   }
 }
-static int slot_row(int slot,int with_auto){
- return with_auto?(slot==TOMB_MANUAL_SLOTS?0:slot+1):slot;
-}
 static int row_slot(int row,int with_auto){
  return with_auto?(row?row-1:TOMB_MANUAL_SLOTS):row;
 }
@@ -129,21 +138,23 @@ static void campaign_overlay(void){
  if(campaign_screen==HOME_RESULTS){show_best_times();return;}
  if(campaign_screen==RESULTS || campaign_screen==FINAL_RESULTS){show_statistics();return;}
  int saving=campaign_screen==SAVE_SLOTS;
- int rows=10,top=135;
- menu_frame(level,textures,155,top,330,40+18*rows,1);
- title_text(top+18,game_strings[saving?5:4],0);
- int with_auto=!saving && autosave_visible(),row=slot_row(slot_cursor,with_auto);
- int first=row>=10?row-9:0;
- for(int i=0;i<rows;i++){
-  int slot=row_slot(first+i,with_auto),selected=slot==slot_cursor;
+ /* Passport requester at 0x465620: width 296, line height 18, bottom offset -32. */
+ int with_auto=!saving && autosave_visible();
+ int first_y=480-32-10-SLOT_ROWS*18;
+ menu_frame(level,textures,170,first_y-45,300,40+18*SLOT_ROWS,1);
+ menu_frame(level,textures,172,first_y-43,296,16,1);
+ title_text(first_y-28,game_strings[saving?5:4],0);
+ for(int i=0;i<SLOT_ROWS;i++){
+  int slot=row_slot(slot_first+i,with_auto),selected=slot==slot_cursor;
+  int y=first_y+i*18;
   int available=saving || slot_levels[slot]>=0;
 
-  if(selected)menu_frame(level,textures,162,top+25+i*18,316,17,1);
+  if(selected)menu_frame(level,textures,176,y-15,288,16,1);
   const char *name=slot_levels[slot]>=0?level_names[slot_levels[slot]]:pc_strings[15];char label[180];
   if(slot==TOMB_MANUAL_SLOTS){snprintf(label,sizeof label,"Autosave - %s",name);name=label;}
-  title_text(top+39+i*18,name,available?0:-1);
+  title_text(y,name,available?0:-1);
  }
- if(slot_error)title_text(386,pc_strings[saving?7:13],0);
+ if(slot_error)title_text(464,pc_strings[saving?7:13],0);
 }
 static int campaign_input(int key){
  if(campaign_screen==PLAY)return 0;
@@ -164,14 +175,14 @@ static int campaign_input(int key){
   int with_auto=campaign_screen==LOAD_SLOTS && autosave_visible();
   for(int row=slot_row(slot_cursor,with_auto)+step;row>=0 && row<TOMB_MANUAL_SLOTS+with_auto;row+=step){
    int slot=row_slot(row,with_auto);
-   if(campaign_screen==SAVE_SLOTS || slot_levels[slot]>=0){slot_cursor=slot;break;}
+   if(campaign_screen==SAVE_SLOTS || slot_levels[slot]>=0){slot_cursor=slot;scroll_to_slot(with_auto);break;}
   }
  }
  if(confirm){
   remembered_slot=slot_cursor;
   if(campaign_screen==LOAD_SLOTS){
-   if(death_passport){campaign_screen=PLAY;title_page=return_frame=0;return_item=1;ring_exit=7;menu_sound(111);}
-   else pending_transition=4;
+   campaign_screen=PLAY;title_page=return_frame=0;return_item=1;ring_exit=7;
+   if(death_passport)menu_sound(111);
    return 1;
   }
   if(write_slot(slot_cursor)){campaign_screen=PLAY;title_page=0;return_frame=0;return_item=1;ring_exit=4;scan_slots();}else slot_error=1;
@@ -372,19 +383,32 @@ static void new_game_draw(void){
   title_text(y,name,enabled?0:-1);
  }
 }
-static void open_key_ring(int request){
- inventory_refresh();if(!owned_count[1])return;home_playing=0;tr2_audio_inventory(1);menu_reset();game_ring=KEY_RING;lock_ring=request;memset(home_keys,0,sizeof home_keys);
+static void open_inventory_ring(int ring){
+ pending_inventory_use=-1;
+ home_playing=0;tr2_audio_inventory(1);
+ menu_reset();game_ring=ring;tr2_audio_pause(0);menu_sound(111);
 }
+static void open_key_ring(int request){
+ inventory_refresh();if(!owned_count[1])return;
+ open_inventory_ring(KEY_RING);lock_ring=request;
+}
+static const int quick_weapon_items[]={135,136,137,138,140,141,139};
 static void title_key(int key){
  if(intro_active){if(key==VK_ESCAPE || key==VK_RETURN || key==VK_SPACE)intro_skip=1;if(intro_active==2)for(int i=0;i<14;i++)if(control_matches(i,key))intro_skip=1;return;}
  if(campaign_input(key))return;
  if(home_playing){
   if(tr2_home_dead()){if(key==VK_ESCAPE || key==VK_RETURN)tr2_home_death_input();for(int i=0;i<14;i++)if(control_matches(i,key))tr2_home_death_input();return;}
   if(key>='1' && key<='7'){
-   static const int items[]={135,137,136,138,140,141,139};
-   tr2_quick_weapon(items[key-'1']);return;
+   tr2_quick_weapon(quick_weapon_items[key-'1']);return;
   }
-  if(control_matches(13,key) || key==VK_ESCAPE){home_playing=0;tr2_audio_inventory(1);memset(home_keys,0,sizeof home_keys);menu_reset();scan_slots();tr2_audio_pause(0);menu_sound(111);}return;
+  int shortcut=key==VK_F5 || key==VK_F6;
+  if(shortcut || control_matches(13,key) || key==VK_ESCAPE){
+   if(shortcut && (tr2_level_world()->cinematic_active || tr2_level_finished() || (key==VK_F5 && !current_level)))return;
+   scan_slots();if(key==VK_F6 && !slots_available)return;
+   open_inventory_ring(shortcut?OPTION_RING:MAIN_RING);
+   if(shortcut)passport_shortcut=key;
+  }
+  return;
  }
  if(item_busy())return;
  if(title_page==4 && control_capture>=0){if(key==VK_ESCAPE)control_capture=-1;else if(controls_bind(control_capture,key)){control_capture=-1;menu_sound(111);}return;}
@@ -395,7 +419,7 @@ static void title_key(int key){
   return;
  }
  if(new_game_page){new_game_input(key==VK_ESCAPE || key==VK_DECIMAL,up,down,right-left,confirm);return;}
- if(key==VK_ESCAPE || key==VK_DECIMAL || (home_session && control_matches(13,key))){if(title_page){return_frame=title_page==1 && title_choice==2?29:0;title_page=0;return_item=1;ring_held_key=0;menu_sound(112);}else if(home_session){ring_exit=4;ring_held_key=0;}return;}
+ if(key==VK_ESCAPE || key==VK_DECIMAL || (home_session && control_matches(13,key))){if(title_page){return_frame=title_page==1 && title_choice==2?29:0;title_page=0;return_item=1;ring_held_key=0;menu_sound(112);}else if(home_session){ring_exit=4;ring_held_key=0;menu_sound(112);}return;}
  if(!title_page){
   if(home_session && !lock_ring && (up || down)){
    int next=game_ring==MAIN_RING?(up?KEY_RING:OPTION_RING):((game_ring==KEY_RING && down) || (game_ring==OPTION_RING && up)?MAIN_RING:game_ring);
@@ -440,7 +464,17 @@ static void title_key(int key){
   if(confirm && control_layout)control_capture=title_choice;
  }
 }
+static double inventory_time_fraction;
 static void menu_tick(double dt){
+ /* DisplayInventory (422611) counts elapsed time on campaign levels,
+    including time spent on passport pages. Level zero is Lara's Home. */
+ if(home_session && !home_playing && current_level>0 && !pending_transition &&
+    (campaign_screen==PLAY || campaign_screen==LOAD_SLOTS || campaign_screen==SAVE_SLOTS)){
+  inventory_time_fraction+=dt*30;
+  int ticks=(int)inventory_time_fraction;
+  tr2_level_world()->inventory->ticks+=ticks;
+  inventory_time_fraction-=ticks;
+ }
  if(campaign_screen!=PLAY)return;
  ring_fraction+=dt*60;
  while(ring_fraction>=1 && running){ring_fraction-=1;remember_ring();
@@ -462,8 +496,8 @@ static void menu_tick(double dt){
   if(ring_open>1-1e-8)ring_open=1;
   if(ring_open==1)switch_pitch=0;
   /* Death inventory (mode 5) selects the passport once the option ring opens. */
-  if(death_passport && ring_open==1 && !title_page && !return_item && !ring_exit){
-   title_page=1;title_choice=slots_available?0:2;menu_sound(111);
+  if((death_passport || passport_shortcut) && ring_open==1 && !title_page && !return_item && !ring_exit){
+   title_page=1;title_choice=death_passport?(slots_available?0:2):passport_shortcut==VK_F5;menu_sound(111);
   }
   int count=ring_count();
   double delta=remainder(title_selection*2*PI/count-title_angle,2*PI);
@@ -472,12 +506,17 @@ static void menu_tick(double dt){
   turning=turn_ticks!=0;
   for(int i=0;i<count;i++){int id=ring_id(i),selected=i==title_selection,inspect=selected && title_page;const MenuDescriptor *d=menu_descriptor(id);RingItem *item=ring_items+id;
    int frame=inspect?(id==133?page_frame():d->open):0;
+   /* 44eea9 confirms guns and medipacks without resetting the model frame. */
+   if(selected && return_item && flare_pick && ((id>=157 && id<=163) || id==171 || id==172))frame=d->open;
    if(!inspect && id==133 && return_item){frame=return_frame;if(item->frame==frame){item->closed=1;item->display_frame=0;item->frame=frame=return_frame=0;}}
    move_item(item,d,selected,inspect,frame,turning);
+   if(passport_shortcut && selected && page_ready()){
+    int saving=passport_shortcut==VK_F5;passport_shortcut=0;open_slots(saving);return;
+   }
    if(death_passport && title_page==1 && !title_choice && page_ready()){open_slots(0);return;}
-   if(title_page==9 && page_ready()){title_page=0;return_item=flare_pick=1;}
+   if(selected && title_page==9 && page_ready()){title_page=0;return_item=flare_pick=1;}
    if(selected && !inspect && !item->lift && item->frame==frame){return_item=0;if(flare_pick){int pickup=ring_pickup(title_selection);flare_pick=0;
-    if(pickup<142 || pickup>148){tr2_level_use(pickup,lock_ring);ring_exit=4;}}if(ring_exit==2)ring_exit=home_session?5:1;else if(ring_exit==3)ring_exit=6;}
+    if(pickup<142 || pickup>148){pending_inventory_use=pickup;ring_exit=4;}}if(ring_exit==2)ring_exit=home_session?5:1;else if(ring_exit==3)ring_exit=6;}
   }
  }
 }
@@ -488,7 +527,7 @@ static void title_scene(int full_w,int full_h){
  vw=(int)((int64_t)vw*width/full_w);vh=(int)((int64_t)vh*height/full_h);glViewport((width-vw)/2,(height-vh)/2,vw,vh);
  if(!home_session){menu_flat();glDisable(GL_BLEND);glDisable(GL_CULL_FACE);glEnable(GL_TEXTURE_2D);glBindTexture(GL_TEXTURE_2D,title_background);glColor3f(1,1,1);
  glBegin(GL_QUADS);glTexCoord2f(0,0);glVertex2i(0,0);glTexCoord2f(1,0);glVertex2i(640,0);glTexCoord2f(1,1);glVertex2i(640,480);glTexCoord2f(0,1);glVertex2i(0,480);glEnd();}
- if(new_game_page || (campaign_screen!=PLAY && !(death_passport && campaign_screen==LOAD_SLOTS)))return;
+ if(new_game_page || (campaign_screen!=PLAY && campaign_screen!=LOAD_SLOTS && campaign_screen!=SAVE_SLOTS))return;
  menu_projection();
  for(int i=0;i<ring_count();i++){
   int id=ring_id(i);
@@ -602,6 +641,11 @@ static int capture_image(const char *path){
 }
 
 static uint32_t home_input(void){
+ /* A tap is handled on keydown. While held, TR2 polls in number-row order
+    and takes the first owned weapon. */
+ if(home_playing && campaign_screen==PLAY && !intro_active){
+  for(int n=0;n<7;n++)if(home_keys['1'+n] && tr2_quick_weapon(quick_weapon_items[n]))break;
+ }
  const uint32_t bits[]={TR2_FORWARD,TR2_BACK,TR2_LEFT,TR2_RIGHT,TR2_STEP_LEFT,TR2_STEP_RIGHT,TR2_WALK,TR2_JUMP,TR2_ACTION,32,0x80000,TR2_LOOK,TR2_ROLL,tr2_home_dead()?256u:0u};
  uint32_t input=0;for(int action=0;action<14;action++)for(int key=0;key<256;key++)if(home_keys[key] && control_matches(action,key)){input|=bits[action];break;}
  /* Shared launcher pad provides the same held directional and action buttons. */
@@ -611,6 +655,7 @@ static uint32_t home_input(void){
  return input;
 }
 static void begin_level_flow(int index){
+ inventory_time_fraction=0;
  tr2_level_sunset(entry_sunset[index]);
  death_passport=0;current_level=index;flow_cursor=flow_after_level[index];flow_track=level_music[index];flow_angle=0x4000;flow_advance=0;
  campaign_screen=PLAY;home_session=home_playing=1;ring_exit=0;
@@ -663,11 +708,21 @@ static int resume_level_flow(void){
 }
 static int home_transition(void){
  int transition=pending_transition;pending_transition=0;if(!transition)return 1;
+ /* The world was paused. Continue its tick and use the current held inputs. */
+ if(transition==2){
+  ring_held_key=0;home_playing=1;ring_exit=0;tr2_audio_inventory(0);
+  if(pending_inventory_use>=0){tr2_level_use(pending_inventory_use,lock_ring);pending_inventory_use=-1;}
+  return 1;
+ }
  memset(home_keys,0,sizeof home_keys);pad_previous=0;ring_held_key=0;
  if(transition==4){
   int index=slot_levels[slot_cursor];char path[MAX_PATH];slot_path(path,slot_cursor);
   if(index<0 || index>=(int)level_count || !tr2_level_restore(asset_root,level_files[index],index,path)){slot_error=1;
-   if(death_passport){ring_exit=0;ring_open=1;title_page=1;title_choice=0;campaign_screen=LOAD_SLOTS;}
+   ring_exit=0;ring_open=1;title_page=1;title_choice=0;campaign_screen=LOAD_SLOTS;
+   RingItem *passport=ring_items+133;
+   passport->lift=16;passport->frame=14;passport->display_frame=14;
+   passport->yaw=menu_descriptor(133)->yaw;passport->closed=passport->lowering=0;
+   ring_history=0;
    return 1;}
   launch_options=tr2_level_world()->level->custom.options;audio_close();begin_level_flow(index);return 1;
  }
@@ -679,6 +734,5 @@ static int home_transition(void){
   if(start_campaign_level(index,0,from_home))return 1;
   level_available[index]=0;if(!index)home_available=0;return return_to_title();
  }
- if(transition==2){tr2_home_interpolation_reset();home_playing=1;ring_exit=0;tr2_audio_inventory(0);return 1;}
  return return_to_title();
 }

@@ -46,6 +46,7 @@ static double previous_radius,previous_spin,previous_open,previous_angle,previou
 static int previous_ring,ring_history;
 /* Home exposes the stopwatch; options share the title item renderer. */
 static int game_ring,ring_switch,switch_pitch,ring_memory[3],flare_pick;
+static int pending_inventory_use=-1;
 static double ring_lerp(double a,double b){
     return ring_history && previous_ring==game_ring?a+ring_fraction*(b-a):b;
 }
@@ -56,7 +57,7 @@ static const int title_ids[TITLE_ITEMS]={133,155,153,154,122};
 static const char *title_names[TITLE_ITEMS]={"Game","Controls","Detail Levels","Sound","Lara's Home"};
 static int title_disabled(int id){return id==122 && !home_session && !home_available;}
 enum { MAIN_RING, OPTION_RING, KEY_RING };
-static int current_level,ring_target,lock_ring,death_passport;
+static int current_level,ring_target,lock_ring,death_passport,passport_shortcut;
 static int ring_items_owned[2][32],owned_count[2];
 static const char *ring_name(int index);
 static int pickup_model(int id){
@@ -76,6 +77,7 @@ static int ring_pickup(int index){return ring_items_owned[game_ring==KEY_RING][i
 static int ring_id(int index){if(death_passport)return title_ids[index==2?3:index];return home_session && game_ring!=OPTION_RING?pickup_model(ring_pickup(index)):title_ids[index];}
 /* Tomb2.exe 42285d dispatches the selection cue by inventory model. */
 static int ring_selection_sound(int id){
+    if(id==121)return 113;
     if(id>=157 && id<=163)return 114;
     return 111;
 }

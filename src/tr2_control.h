@@ -5,7 +5,7 @@
 enum Tr2Input {
     TR2_FORWARD=1,TR2_BACK=2,TR2_LEFT=4,TR2_RIGHT=8,TR2_JUMP=16,
     TR2_ACTION=64,TR2_WALK=128,TR2_LOOK=512,TR2_STEP_LEFT=1024,
-    TR2_STEP_RIGHT=2048,TR2_ROLL=4096
+    TR2_STEP_RIGHT=2048,TR2_ROLL=4096,TR2_DRAW_SELECTED=1u<<20
 };
 typedef struct {
     int16_t health,current,goal,animation,frame,roll,turn_rate,water_status;

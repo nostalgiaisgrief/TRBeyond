@@ -14,6 +14,8 @@ static LRESULT CALLBACK launcher_window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp
     if(msg==WM_SYSKEYDOWN && wp==VK_RETURN && (lp&(1L<<29))){if(!(lp&(1L<<30)))toggle_fullscreen(w);return 0;}
     if(msg==WM_KEYDOWN){
         if(!(lp&(1L<<30))){
+            if(wp==VK_LEFT || wp==VK_NUMPAD4)launcher_input|=TOMB_RING_LEFT;
+            if(wp==VK_RIGHT || wp==VK_NUMPAD6)launcher_input|=TOMB_RING_RIGHT;
             if(wp==VK_UP || wp==VK_NUMPAD8)launcher_input|=16;
             if(wp==VK_DOWN || wp==VK_NUMPAD2)launcher_input|=32;
             if(wp==VK_RETURN || wp==VK_CONTROL)launcher_input|=TOMB_RING_SELECT;
@@ -105,15 +107,16 @@ static void launcher_xr_panel(const TombVrInput *input){
     xr.panel=(XrPosef){{0,(float)sin(yaw/2),0,(float)cos(yaw/2)},{(float)(head->p[0]-sin(yaw)*1.8),(float)(head->p[1]-xr.floor_offset),(float)(head->p[2]-cos(yaw)*1.8)}};
     xr.panel_open=1;
 }
-static int launcher_run(const TombLauncherGame *games,int count,int vr_requested,const char *shot){
+static int launcher_run(const TombLauncherGame *games,int count,int vr_requested,const char *shot,int test_tr3){
     char path[MAX_PATH],last[16];snprintf(path,sizeof path,"%s/launcher.ini",install_root);
     GetPrivateProfileStringA("Launcher","last_game","",last,sizeof last,path);
     TombLauncherSelection selection=tomb_launcher_select(games,count,last);
+    if(test_tr3 && !(selection.available&(1u<<2)))return -1;
     if(selection.current<0){MessageBoxA(NULL,"No supported game data was found. Run the installer to import an owned copy of Tomb Raider.","Tomb Raider Beyond",MB_OK|MB_ICONINFORMATION);return -1;}
     if(!launcher_window_open()){launcher_window_close();return -1;}
     TombLauncherStyle style={0};
     if(!games[selection.style].open_style(&style)){launcher_window_close();return -1;}
-    if(!shot){toggle_fullscreen(launcher_window.window);ShowWindow(launcher_window.window,SW_SHOW);pad_init();}
+    if(!shot && !test_tr3){toggle_fullscreen(launcher_window.window);ShowWindow(launcher_window.window,SW_SHOW);pad_init();}
     SetTimer(launcher_window.window,1,500,NULL);
     if(vr_requested && !xr_open())MessageBoxA(launcher_window.window,xr.error,"Virtual Reality unavailable",MB_OK|MB_ICONWARNING);
     unsigned previous=0;int first=1,capture_ok=0;launcher_input=0;launcher_quit=0;
@@ -129,6 +132,7 @@ static int launcher_run(const TombLauncherGame *games,int count,int vr_requested
         }
         int focused=xr.instance?xr.state==XR_SESSION_STATE_FOCUSED:GetActiveWindow()==launcher_window.window;
         unsigned action=focused?launcher_input|(first?0:buttons&~previous):0;launcher_input=0;previous=buttons;first=0;
+        if(test_tr3)action=!strcmp(games[selection.current].id,"TR3")?TOMB_RING_SELECT:32;
         if(action&16)tomb_launcher_move(&selection,count,-1);if(action&32)tomb_launcher_move(&selection,count,1);
         if(action&TOMB_RING_BACK)launcher_quit=1;
         if(action&TOMB_RING_SELECT)selection.confirmed=1;
@@ -153,6 +157,6 @@ static int launcher_run(const TombLauncherGame *games,int count,int vr_requested
     if(shot || launcher_quit){launcher_window_close();return shot?(capture_ok?-2:-1):-2;}
     /* Do not reveal a title background while the selected game initializes. */
     glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);SwapBuffers(launcher_window.dc);
-    WritePrivateProfileStringA("Launcher","last_game",games[selection.current].id,path);
+    if(!test_tr3)WritePrivateProfileStringA("Launcher","last_game",games[selection.current].id,path);
     return selection.current;
 }

@@ -288,28 +288,37 @@ void tr2_combat_view_tick(const Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t inp
         if(g->weapon==8 && !a->gun_status)a->gun_status=3;
         else if(w->inventory->count[151]>0)g->requested=8;
     }
-    /* 42ead9/42eb19: mounted Lara may use flares, but cannot draw guns.
-       A gun request while holding a flare only updates the remembered gun. */
-    if(!a->gun_status && w->vehicle>=0 && g->requested>=1 && g->requested<=7){
+    if(g->weapon==8 && !a->gun_status && (input&32))g->requested=g->last_weapon;
+    /* LaraGun tests the currently selected weapon's height before changing
+       weapons (42eafb). A blocked request still becomes the selection. */
+    static const int gun_height[]={0,650,650,650,500,500,500,500,0};
+    int height=(unsigned)g->weapon<sizeof gun_height/sizeof *gun_height?gun_height[g->weapon]:0;
+    int can_draw=w->vehicle<0 && (g->requested==7 || a->control.water_status==0 ||
+        (a->control.water_status==4 && a->water_distance > -height));
+    if(!a->gun_status && g->requested>=1 && g->requested<=7 && !can_draw &&
+       (g->requested!=g->weapon || (input&(32|TR2_DRAW_SELECTED)))){
         g->last_weapon=g->requested;
         if(g->weapon==8)g->requested=8;else g->weapon=g->requested;
-        input&=~32u;
     }
     if(g->weapon==8){
-        if(!a->gun_status && (input&32))g->requested=g->last_weapon;
         if(!a->gun_status && g->requested!=8){tr2_flare_create(l,w,a,0);g->meshes=0;g->flare_control=0;g->weapon=g->requested;g->rifle_active=0;input|=32;}
         else{tr2_flare_tick(l,w,a);return;}
     }
     if(!a->gun_status && g->requested==8 && w->inventory->count[151]>0){
         if(g->weapon>0 && g->weapon<8)g->last_weapon=g->weapon;g->weapon=8;a->gun_status=2;g->rifle_active=0;g->arms[0].frame=0;g->flare_timer=0;g->torso_yaw=g->torso_pitch=0;tr2_flare_tick(l,w,a);return;
     }
-    int allowed=g->requested==7 || a->control.water_status==0 || (a->control.water_status==4 && a->water_distance> -(g->weapon>=4?500:650));
-    if(!a->gun_status && g->requested>=1 && g->requested<=7 && ((input&32) || g->weapon!=g->requested) && allowed && w->inventory->count[g->requested==7?139:g->requested==5?140:g->requested==6?141:g->requested==4?136:g->requested==2?137:g->requested==3?138:135]){a->gun_status=2;g->weapon=g->last_weapon=g->requested;
+    if(!a->gun_status && can_draw && g->requested>=1 && g->requested<=7 && ((input&(32|TR2_DRAW_SELECTED)) || g->weapon!=g->requested) && w->inventory->count[g->requested==7?139:g->requested==5?140:g->requested==6?141:g->requested==4?136:g->requested==2?137:g->requested==3?138:135]){a->gun_status=2;g->weapon=g->last_weapon=g->requested;
         if(l->custom.options&TR2_CONSISTENT_WEAPONS)w->level->custom.last_drawn=g->weapon;
         g->arms[0].frame=g->arms[1].frame=0;g->target=-1;g->rifle_active=0;}
     if(g->weapon<1 || g->weapon>7)return;
-    allowed=g->weapon==7 || a->control.water_status==0 || (a->control.water_status==4 && a->water_distance> -(g->weapon>=4?500:650));
+    /* Once drawn, the weapon stays out at exactly its height (42ec07). */
+    int allowed=g->weapon==7 || a->control.water_status==0 || (a->control.water_status==4 && a->water_distance>=-gun_height[g->weapon]);
     if(a->gun_status==4 && ((input&32) || !allowed || g->requested!=g->weapon))a->gun_status=3;
+    /* LaraGun (42e7c7/42e8a5) claims the camera before firing or aiming. */
+    if((a->gun_status==2 || a->gun_status==4) && !w->cinematic_active && !(look && look->active)){
+        w->camera_active=TR2_CAMERA_COMBAT;
+        w->camera_target=-1;
+    }
     if(a->gun_status==4 && (input&TR2_ACTION) && g->weapon>1 && g->ammo[g->weapon]<=0){g->ammo[g->weapon]=0;sound(a,48);g->requested=w->inventory->count[135]?1:0;return;}
     if(g->weapon>=4 && g->weapon<=7){int ready=a->gun_status==4;if(a->gun_status>=2 && a->gun_status<=4)rifle_tick(l,w,a,input);if(ready && (g->weapon==4 || g->weapon==5) && g->arms[1].flash)tr2_dynamic_light(w,a->x+tr2_asr(tr2_sin(a->yaw),4),a->y-512,a->z+tr2_asr(tr2_cos(a->yaw),4),12,11);return;}
     if(a->gun_status==2){

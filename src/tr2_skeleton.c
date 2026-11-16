@@ -12,9 +12,27 @@ static void rotate(Matrix *m,int axis,int angle){
         m->v[i][q]=tr2_asr(tr2_long((int64_t)b*c-(int64_t)a*s),14);}
 }
 static void translate(Matrix *m,int x,int y,int z){for(int i=0;i<3;i++)m->v[i][3]=tr2_long((int64_t)m->v[i][3]+(int64_t)m->v[i][0]*x+(int64_t)m->v[i][1]*y+(int64_t)m->v[i][2]*z);}
-void tr2_rotate_offset(int yaw,int pitch,const int vector[3],int out[3]){
-    Matrix m={{{16384,0,0,0},{0,16384,0,0},{0,0,16384,0}}};rotate(&m,1,yaw);rotate(&m,0,pitch);
+static void rotate_offset(int yaw,int pitch,int roll,const int vector[3],int out[3]){
+    Matrix m={{{16384,0,0,0},{0,16384,0,0},{0,0,16384,0}}};rotate(&m,1,yaw);rotate(&m,0,pitch);rotate(&m,2,roll);
     translate(&m,vector[0],vector[1],vector[2]);for(int i=0;i<3;i++)out[i]=tr2_asr(m.v[i][3],14);
+}
+void tr2_rotate_offset(int yaw,int pitch,const int vector[3],int out[3]){
+    rotate_offset(yaw,pitch,0,vector,out);
+}
+void tr2_object_light_offset(const Tr2Level *l,const Tr2Actor *actor,int out[3]){
+    memset(out,0,3*sizeof *out);
+    if((unsigned)actor->control.animation>=l->animations.count)return;
+    const uint8_t *animation=l->animations.data+32*actor->control.animation;
+    int tick=actor->control.frame-tr2_i16(animation+16);
+    if(tick<0 || !animation[4] || animation[5]<6)return;
+    /* DrawAnimatingItem passes the first of its two animation keyframes
+       to CalculateObjectLighting, even between keyframes. */
+    size_t offset=(size_t)tr2_u32(animation)+(size_t)(tick/animation[4])*animation[5]*2;
+    if(offset+12>(size_t)l->frames.count*2)return;
+    const uint8_t *bounds=l->frames.data+offset;
+    int centre[3];
+    for(int i=0;i<3;i++)centre[i]=tr2_asr(tr2_i16(bounds+4*i)+tr2_i16(bounds+4*i+2),1);
+    rotate_offset(actor->yaw,actor->pitch,actor->control.roll,centre,out);
 }
 static int packed(Matrix *m,const uint8_t **p,const uint8_t *end){
     if(*p+2>end)return 0;unsigned a=tr2_u16(*p);*p+=2;
@@ -50,8 +68,8 @@ static int weapon_torso(const Tr2Level *l,const Tr2Actor *a,const Tr2Combat *g,M
     *out=samples[0];if(part)for(int i=0;i<3;i++)for(int j=0;j<4;j++)out->v[i][j]=rate==2?tr2_asr(samples[0].v[i][j]+samples[1].v[i][j],1):samples[0].v[i][j]+(samples[1].v[i][j]-samples[0].v[i][j])*part/rate;
     return 1;
 }
-static int pose_matrix(const Tr2Level *l,const Tr2Actor *a,int id,const Tr2Look *look,const Matrix *view,const Tr2Combat *gun,Matrix out[64]){
-    const uint8_t *model=tr2_model(l,(uint32_t)id),*f=nearest_frame(l,a),*end=l->frames.data+l->frames.count*2;
+static int pose_matrix(const Tr2Level *l,const Tr2Actor *a,int id,const Tr2Look *look,const Matrix *view,const Tr2Combat *gun,const uint8_t *frame,Matrix out[64]){
+    const uint8_t *model=tr2_model(l,(uint32_t)id),*f=frame?frame:nearest_frame(l,a),*end=l->frames.data+l->frames.count*2;
     if(!model || !f)return 0;int n=tr2_u16(model+4);if(n<1 || n>64)return 0;
     const Tr2Creature *creature=NULL;const Tr2World *world=l->world;
     if(world && (uintptr_t)a>=(uintptr_t)world->objects && (uintptr_t)a<(uintptr_t)(world->objects+world->count)){
@@ -91,16 +109,16 @@ static int pose_matrix(const Tr2Level *l,const Tr2Actor *a,int id,const Tr2Look 
         out[i]=m;
     }return n;
 }
-static int pose(const Tr2Level *l,const Tr2Actor *a,int id,const Tr2Look *look,Matrix out[64]){return pose_matrix(l,a,id,look,NULL,NULL,out);}
+static int pose(const Tr2Level *l,const Tr2Actor *a,int id,const Tr2Look *look,Matrix out[64]){return pose_matrix(l,a,id,look,NULL,NULL,NULL,out);}
 int tr2_weapon_joint(const Tr2Level *l,const Tr2Actor *a,const Tr2Combat *g,int joint,int point[3]){
-    Matrix matrices[64];int n=pose_matrix(l,a,0,NULL,NULL,g,matrices);if(joint<0 || joint>=n)return 0;
+    Matrix matrices[64];int n=pose_matrix(l,a,0,NULL,NULL,g,NULL,matrices);if(joint<0 || joint>=n)return 0;
     Matrix m=matrices[joint];translate(&m,point[0],point[1],point[2]);point[0]=a->x+tr2_asr(m.v[0][3],14);point[1]=a->y+tr2_asr(m.v[1][3],14);point[2]=a->z+tr2_asr(m.v[2][3],14);return 1;
 }
 int tr2_spheres_shot(const Tr2Level *l,const Tr2Actor *a,int id,const Tr2Position *origin,int yaw,int pitch,Tr2Sphere out[64]){
     int sy=tr2_sin(yaw),cy=tr2_cos(yaw),sp=tr2_sin(pitch),cp=tr2_cos(pitch);
     Matrix view={{{cy,0,-sy,0},{tr2_asr(sy*sp,14),cp,tr2_asr(cy*sp,14),0},{tr2_asr(sy*cp,14),-sp,tr2_asr(cy*cp,14),0}}};
     translate(&view,a->x-origin->x,a->y-origin->y,a->z-origin->z);
-    Matrix matrices[64];int n=pose_matrix(l,a,id,NULL,&view,NULL,matrices);const uint8_t *model=tr2_model(l,(uint32_t)id);if(!n || !model)return 0;
+    Matrix matrices[64];int n=pose_matrix(l,a,id,NULL,&view,NULL,NULL,matrices);const uint8_t *model=tr2_model(l,(uint32_t)id);if(!n || !model)return 0;
     unsigned first=tr2_u16(model+6);if(first+(unsigned)n>l->mesh_offsets.count)return 0;
     for(int j=0;j<n;j++){
         unsigned off=tr2_u32(l->mesh_offsets.data+(first+j)*4);if(off+10>l->mesh_data.count*2)return 0;
@@ -134,7 +152,7 @@ uint32_t tr2_touch(const Tr2Level *l,const Tr2Actor *a,int id,const Tr2Actor *b,
     return mask;
 }
 int tr2_hair_samples(const Tr2Level *l,const Tr2Actor *a,const Tr2Look *look,int anchor[3],Tr2Sphere body[5]){
-    Matrix matrices[64];if(pose(l,a,0,look,matrices)<15)return 0;
+    Matrix matrices[64];if(pose_matrix(l,a,0,look,NULL,NULL,tr2_hit_frame(l,l->world),matrices)<15)return 0;
     static const int joints[]={0,7,14,8,11},meshes[]={0,7,14,8,8};
     const uint8_t *model=tr2_model(l,0);unsigned first=tr2_u16(model+6);
     for(int j=0;j<5;j++){
@@ -143,6 +161,6 @@ int tr2_hair_samples(const Tr2Level *l,const Tr2Actor *a,const Tr2Look *look,int
         body[j]=(Tr2Sphere){a->x+tr2_asr(m.v[0][3],14),a->y+tr2_asr(m.v[1][3],14),a->z+tr2_asr(m.v[2][3],14),tr2_i16(mesh+6)};
         if(j>=3)body[j].radius=body[j].radius*3/2;
     }
-    Matrix m=matrices[14];translate(&m,0,-23,-55);
+    Matrix m=matrices[14];translate(&m,0,TR2_HAIR_HEAD_Y,TR2_HAIR_HEAD_Z);
     anchor[0]=a->x+tr2_asr(m.v[0][3],14);anchor[1]=a->y+tr2_asr(m.v[1][3],14);anchor[2]=a->z+tr2_asr(m.v[2][3],14);return 1;
 }

@@ -42,8 +42,8 @@ void tr2_water_control(const Tr2Level *l,Tr2Actor *a,Tr2Water *w,uint32_t input)
         if(s->health<=0){s->goal=44;return;}
         if(input&TR2_ROLL){s->current=66;tr2_set_animation(l,a,203,0);return;}
         if(input&TR2_FORWARD)a->pitch=tr2_word(a->pitch-364);else if(input&TR2_BACK)a->pitch=tr2_word(a->pitch+364);
-        if(input&TR2_LEFT){s->turn_rate=(int16_t)clamp(tr2_word(s->turn_rate-409),1092);s->roll=tr2_word(s->roll-546);}
-        else if(input&TR2_RIGHT){s->turn_rate=(int16_t)clamp(tr2_word(s->turn_rate+409),1092);s->roll=tr2_word(s->roll+546);}
+        if(input&TR2_LEFT){s->turn_rate=tr2_word(s->turn_rate-409);if(s->turn_rate< -1092)s->turn_rate=-1092;s->roll=tr2_word(s->roll-546);}
+        else if(input&TR2_RIGHT){s->turn_rate=tr2_word(s->turn_rate+409);if(s->turn_rate>1092)s->turn_rate=1092;s->roll=tr2_word(s->roll+546);}
         if(state==17){a->fall_speed=tr2_word(a->fall_speed+8);if(a->fall_speed>200)a->fall_speed=200;if(!(input&TR2_JUMP))s->goal=18;}
         else if(state==18 || state==13){if(input&TR2_JUMP)s->goal=17;a->fall_speed=tr2_word(a->fall_speed-6);if(a->fall_speed<0)a->fall_speed=0;if(state==18 && a->fall_speed<=133)s->goal=13;if(state==13 && a->gun_status==1)a->gun_status=0;}
         return;

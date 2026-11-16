@@ -6,6 +6,7 @@ void tr2_audio_pause(int paused);
 void tr2_audio_set_secret_track(int track);
 void tr2_audio_stop_music(void);
 int tr2_audio_music_cue(void);
+int tr2_audio_secret_return_test(int level_track);
 int tr2_audio_music_active(void);
 void tr2_audio_inventory(int open);
 int tr2_audio_inventory_test(void);

@@ -193,7 +193,20 @@ static void inventory_begin(void);
 static int crystal_pending=-1,crystal_held,crystal_render,level_start_save;
 static int passport_shortcut,passport_save;
 static void refresh_slots(void);
-static int backdrop_dirty,backdrop_shade;
+static int backdrop_dirty,backdrop_shade,pause_resuming;
+static double pause_darkness;
+static void toggle_game_pause(void){
+    if(paused){pause_resuming=!pause_resuming;return;}
+    paused=1;pause_resuming=0;pause_darkness=0;backdrop_dirty=1;
+}
+static void advance_pause_fade(double dt){
+    /* The inventory ring changes its shade by one unit per 30 Hz tick. */
+    if(pause_resuming)pause_darkness=fmax(0,pause_darkness-30*dt);
+    else pause_darkness=fmin(16,pause_darkness+30*dt);
+}
+static void finish_pause_frame(void){
+    if(paused && pause_resuming && pause_darkness==0){paused=0;pause_resuming=0;}
+}
 static unsigned char *cinematic_pixels,cinematic_palette[768],cinematic_light[256];
 static int cinematic_width,cinematic_height;
 static void frontend_title(void);
@@ -1560,9 +1573,12 @@ static void overlay(void) {
     glDisable(GL_SCISSOR_TEST);glDisable(GL_TEXTURE_2D);glDisable(GL_ALPHA_TEST);glDisable(GL_DEPTH_TEST);
     glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glOrtho(0,width,height,0,-4096,4096);
     glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
+    int pause_screen=paused && !inventory_open && !title_mode && !cinema_mode && !complete;
+    if(pause_screen && pause_darkness>0 && overlay_pass!=2)
+        frontend_inventory_backdrop(16+(int)ceil(pause_darkness/2));
     int medipack=0;
     if(inventory_open || complete) {
-        if(overlay_pass!=2 && !title_mode && !vr_hand_ring())frontend_inventory_backdrop();
+        if(overlay_pass!=2 && !title_mode && !vr_hand_ring())frontend_inventory_backdrop(complete?24:backdrop_shade/2);
         if(overlay_pass!=2 && title_mode)frontend_backdrop();
         if(complete) {
             char lines[4][80];tomb_statistics(play.inventory.ticks,play.pistols.kills,play.inventory.pickups,objects.progress->secrets,tomb_level_secret_total(level_number),lines);
@@ -1591,14 +1607,18 @@ static void overlay(void) {
             for(int i=0;i<3;i++)if(subject->hud.pickup_time[i]>0)pickup_icon(subject->hud.pickup_id[i],i);
         }
     }
-    if(overlay_pass!=1 && !title_mode && !cinema_mode && !complete && !inventory_open &&
-       level_name_time>0 && detail_notice_time<=0 && (play.gameplay_options&TOMB_SHOW_LEVEL_NAME))
-        ui_text(0,-24,game_level_name(level_number),TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
+    if(overlay_pass!=1 && !title_mode && !cinema_mode && !complete && !inventory_open){
+        const char *caption=NULL;
+        if(pause_screen){if(!pause_resuming)caption="PAUSED";}
+        else if(level_name_time>0 && detail_notice_time<=0 && (play.gameplay_options&TOMB_SHOW_LEVEL_NAME))
+            caption=game_level_name(level_number);
+        if(caption)ui_text(0,-24,caption,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM);
+    }
     if(overlay_pass!=1 && coop_mode && !coop_connected){
         ui_text(0,-12,coop_mode==1?"Waiting for Client...":"Connecting to Host...",TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
         ui_text(0,16,"Esc - Cancel",TOMB_TEXT_CENTRE|TOMB_TEXT_MIDDLE);
     }
-    if(overlay_pass!=1 && !title_mode && !cinema_mode && detail_notice_time>0){
+    if(overlay_pass!=1 && !title_mode && !cinema_mode && !pause_screen && detail_notice_time>0){
         double scale=ui_scale();
         TombTextStyle style={0,0,65536,65536,1,6,TOMB_TEXT_CENTRE|TOMB_TEXT_BOTTOM};
         int text_width=tomb_text_width(detail_notice,&style);
@@ -2036,7 +2056,7 @@ static LRESULT CALLBACK window_proc(HWND w,UINT msg,WPARAM wp,LPARAM lp) {
             return 0;
         }
         if(wp==VK_ESCAPE) running=0;
-        if(wp=='P') paused=!paused;
+        if(wp=='P' && !(lp&(1L<<30)))toggle_game_pause();
         if(!play.shooter.mode && wp==bindings[9] && !(lp&(1L<<30)))draw_requested=1;
         if(wp=='R') { xr.reset=1;int mode=play.shooter.mode;uint32_t custom_options=play.gameplay_options;cutscene_seen=0;water_particles_reset();tomb_objects_reset(&objects); audio_stop();tomb_sound_output_reset(sound_output);paused=0;camera_hold=0;camera.ready=0;render_reset(); orbit=0; distance=1536; elapsed=0; accumulator=0; pose_mode=0; tomb_playtest_init(&play,level,sine_table,visual); play.movement_only=caves;play.objects=caves?&objects:NULL;if(level_number==0){play.inventory.counts[0]=0;play.inventory.ammo[0]=0;}tomb_gameplay_start(&play,custom_options);tomb_shooter_start(&play,mode);level_inventory=play.inventory; }
         if(wp=='R'){objects.progress->music.current_track=music_source()==0?0:tomb_music_level_track(level_number);draw_requested=0;inventory_open=death_menu=slot_menu=0;play.inventory=level_inventory;}
@@ -2398,7 +2418,11 @@ static int tr1_main(int argc,char **argv) {
         GetWindowRect(window,&after);
         passed=passed && !fullscreen && EqualRect(&before,&after) && !held_keys[VK_RETURN];
         SendMessageA(window,WM_KEYDOWN,'P',1); passed=passed && paused;
-        SendMessageA(window,WM_KEYDOWN,'P',1); passed=passed && !paused;
+        advance_pause_fade(1);
+        SendMessageA(window,WM_KEYDOWN,'P',1);advance_pause_fade(.25);finish_pause_frame();
+        passed=passed && paused && pause_resuming && pause_darkness>0;
+        advance_pause_fade(1);passed=passed && paused && pause_darkness==0;
+        finish_pause_frame();passed=passed && !paused;
         orbit=1;camera.ready=1;camera_hold=1;
         SendMessageA(window,WM_KEYDOWN,'C',1);
         passed=passed && orbit==1 && camera_hold==1 && camera.ready;
@@ -2707,7 +2731,8 @@ static int tr1_main(int argc,char **argv) {
         while(PeekMessage(&msg,NULL,0,0,PM_REMOVE)) { TranslateMessage(&msg); DispatchMessage(&msg); }
         QueryPerformanceCounter(&now); double dt=(double)(now.QuadPart-last.QuadPart)/frequency.QuadPart; last=now;
         if(dt>.1) dt=.1;
-        if(!paused) elapsed+=dt;
+        if(paused)advance_pause_fade(dt);
+        else elapsed+=dt;
         if(play.shooter.mode==TOMB_MODE_VR && !xr.instance){
             if(!xr_open()){MessageBoxA(window,xr.error,"Virtual Reality unavailable",MB_OK|MB_ICONWARNING);tomb_shooter_start(&play,0);frontend_title();}
         }
@@ -2805,6 +2830,7 @@ static int tr1_main(int argc,char **argv) {
         if(!vr_render()){ok=0;break;}
         if(shot) { ok=capture(shot); break; }
         display_present(dc);
+        finish_pause_frame();
         /* Active rendering is paced by VSync, the chosen cap or the XR runtime.
            Sleep(1) can last a full scheduler tick and impose an unintended cap. */
         if(!focused && !xr.instance){
@@ -2825,15 +2851,58 @@ static int tr1_main(int argc,char **argv) {
     return ok?0:1;
 }
 
+#include "tr3_title.h"
+static int tr3_available(void){return tr3_title_available(install_root);}
+static int tr3_main(int argc,char **argv){
+    int hidden=argc>=2 && !strcmp(argv[1],"--tr3-test");
+    xr_close();
+    if(!tr3_title_begin(!hidden)){
+        if(hidden)return 1;
+        MessageBoxA(launcher_window.window,"Could not load the Tomb Raider III PC title assets.","Tomb Raider Beyond",MB_OK|MB_ICONERROR);
+        return 1;
+    }
+    if(hidden){
+        for(int i=0;i<32;i++)tr3_title_tick(0);
+        tr3_title_draw(width,height);
+        int ok=!IsWindowVisible(launcher_window.window) && glGetError()==GL_NO_ERROR;
+        if(argc==4)ok=capture(argv[3]) && ok;
+        tr3_title_end();return ok?0:1;
+    }
+    pad_init();
+    unsigned previous=launcher_pad(),pending=0;
+    LARGE_INTEGER freq,start,now;QueryPerformanceFrequency(&freq);QueryPerformanceCounter(&start);
+    double accumulator=0;launcher_input=0;
+    while(!launcher_quit){
+        MSG msg;while(PeekMessageA(&msg,NULL,0,0,PM_REMOVE)){TranslateMessage(&msg);DispatchMessageA(&msg);}
+        unsigned buttons=launcher_pad();
+        if(GetActiveWindow()==launcher_window.window)pending|=launcher_input|(buttons&~previous);
+        previous=buttons;launcher_input=0;
+        QueryPerformanceCounter(&now);
+        accumulator+=fmin(.25,(double)(now.QuadPart-start.QuadPart)/freq.QuadPart);start=now;
+        while(accumulator>=1./60){tr3_title_tick(pending);pending=0;accumulator-=1./60;}
+        RECT client;GetClientRect(launcher_window.window,&client);tr3_title_draw(client.right,client.bottom);
+        SwapBuffers(launcher_window.dc);
+        MsgWaitForMultipleObjectsEx(0,NULL,8,QS_ALLINPUT,MWMO_INPUTAVAILABLE);
+    }
+    pad_close();tr3_title_end();return 0;
+}
 /* Register game entry points here. Disabled entries have no engine dependency. */
 static const TombLauncherGame launcher_games[]={
  {"TR1","Tomb Raider",tr1_launcher_available,tr1_launcher_style_open,tr1_launcher_style_free,tr1_main},
  {"TR2","Tomb Raider II",tr2_menu_available,tr2_menu_style,tr2_menu_style_free,tr2_main},
- {"TR3","Tomb Raider III",NULL,NULL,NULL,NULL},
+ {"TR3","Tomb Raider III",tr3_available,tr3_title_style,tr3_title_close,tr3_main},
  {"TR4","Tomb Raider: The Last Revelation",NULL,NULL,NULL,NULL},
  {"TR5","Tomb Raider Chronicles",NULL,NULL,NULL,NULL}
 };
 int main(int argc,char **argv){
+ if(argc>=2 && !strcmp(argv[1],"--tr3-test")){
+  if(argc!=2 && !(argc==4 && !strcmp(argv[2],"--capture")))return 1;
+  source_root_init();tr2_menu_root(install_root);
+  int selected=launcher_run(launcher_games,5,0,NULL,1);
+  if(selected<0)return 1;
+  int result=strcmp(launcher_games[selected].id,"TR3")?1:launcher_games[selected].start(argc,argv);
+  launcher_window_close();return result;
+ }
  int direct_tr2=0;for(int i=1;i<argc;i++)if(!strncmp(argv[i],"--tr2",5))direct_tr2=1;
  if(direct_tr2){source_root_init();if(!layout_prepare())return 1;tr2_menu_root(install_root);if(!launcher_window_open())return 1;
   int hidden=0;for(int i=1;i<argc;i++)if(!strcmp(argv[i],"--tr2-test") || !strcmp(argv[i],"--capture"))hidden=1;
@@ -2851,7 +2920,7 @@ int main(int argc,char **argv){
  source_root_init();
  tr2_menu_root(install_root);
  if(!layout_prepare()){MessageBoxA(NULL,"Could not migrate the installation folders. Check for conflicting old and new folders or files in use. No existing destination was overwritten.","Tomb Raider Beyond",MB_OK|MB_ICONERROR);return 1;}
- int selected=launcher_run(launcher_games,5,vr_requested,shot);
+ int selected=launcher_run(launcher_games,5,vr_requested,shot,0);
  if(selected<0)return selected==-2?0:1;
  int result=launcher_games[selected].start(argc,argv);
  if(launcher_window.window)launcher_window_close();

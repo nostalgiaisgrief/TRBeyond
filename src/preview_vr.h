@@ -218,7 +218,7 @@ static int vr_render(void){
         }
     }
     xr.render_eye=-1;
-    if(inventory_open || title_mode || paused || objects.progress->complete){
+    if(inventory_open || title_mode || (paused && (!pause_resuming || pause_darkness>0)) || objects.progress->complete){
         vr_panel_place();
         XrTarget *t=xr.target+2;
         if(xr_target_begin(2)){width=t->width;height=t->height;glViewport(0,0,width,height);glClearColor(0,0,0,vr_hand_ring()?0:1);xr.panel_drawing=1;if(!draw_frame_composite(2))ok=0;xr.panel_drawing=0;glClearColor(0,0,0,1);panel=1;vr_mirror_copy(&vr_mirror_panel,width,height);}

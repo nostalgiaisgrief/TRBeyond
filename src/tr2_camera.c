@@ -91,19 +91,37 @@ int tr2_camera_clamp(const Tr2Level *l,Tr2Position *p,int margin){
     return old.y>floor?floor-old.y:old.y<ceiling?ceiling-old.y:0;
 }
 uint32_t tr2_look_input(Tr2Look *v,const Tr2Actor *a,uint32_t input){
-    v->active=(input&TR2_LOOK)!=0 && a->control.health>0;
-    if(v->active){
+    int state=a->control.current;
+    int held=(input&TR2_LOOK)!=0;
+    /* 4275bb, 431768, 432057: horizontal Look reads the permission left
+       by the previous state handler. Vertical Look is called by the current handler. */
+    int horizontal=held && !v->blocked_next_tick &&
+        (!a->extra_animation || a->control.water_status==1 || a->control.water_status==2);
+    int rolling=(input&TR2_ROLL)!=0;
+    int vertical=held && !a->extra_animation && (state==10 || state==56 ||
+        (a->control.health>0 && ((state==2 && (!rolling || a->control.water_status==4)) ||
+                                 (state==13 && !rolling))));
+    v->blocked_next_tick=0;
+    if(!a->extra_animation)switch(state){
+        case 8: case 12: case 21: case 22: case 26: case 27: case 36: case 37:
+        case 39: case 40: case 41: case 42: case 43: case 44: case 67:
+            v->blocked_next_tick=1;break;
+    }
+    v->active=horizontal || vertical;
+    if(horizontal){
         if(input&TR2_LEFT){input&=~TR2_LEFT;if(v->yaw>-8008)v->yaw-=364;}
         else if(input&TR2_RIGHT){input&=~TR2_RIGHT;if(v->yaw<8008)v->yaw+=364;}
-        if(a->control.current==2){
-            if(input&TR2_FORWARD){input&=~TR2_FORWARD;if(v->pitch>-7644)v->pitch-=364;}
-            else if(input&TR2_BACK){input&=~TR2_BACK;if(v->pitch<4004)v->pitch+=364;}
-        }
-        if(a->gun_status!=1){v->torso_yaw=v->yaw;v->torso_pitch=v->pitch;}
+        if(a->gun_status!=1)v->torso_yaw=v->yaw;
     }else{
         v->yaw=(int16_t)(abs(v->yaw)<364?0:v->yaw-v->yaw/8);v->pitch=(int16_t)(abs(v->pitch)<364?0:v->pitch-v->pitch/8);
         v->torso_yaw=v->yaw;v->torso_pitch=v->pitch;
-    }return input;
+    }
+    if(vertical){
+        if(input&TR2_FORWARD){input&=~TR2_FORWARD;if(v->pitch>-7644)v->pitch-=364;}
+        else if(input&TR2_BACK){input&=~TR2_BACK;if(v->pitch<4004)v->pitch+=364;}
+        if(a->gun_status!=1)v->torso_pitch=v->pitch;
+    }
+    return input;
 }
 static void shift(int32_t *p,int32_t *q,int32_t tp,int32_t tq,int32_t bound,int32_t near,int32_t opposite,int32_t far,int32_t r2) {
     int32_t u=square(tp-bound),v=square(tq-near),a=u+v,b=u+square(tq-far),c=square(tp-opposite)+v;
@@ -290,6 +308,9 @@ void tr2_camera_weapon_tick(const Tr2Level *l,const Tr2Actor *a,Tr2Camera *c,con
     else if(state==36 || state==37){c->angle=6370;c->elevation=-4550;}
     else if(state==38)c->angle=13650;
     else if(state==40 || state==41){c->angle=14560;c->elevation=-4550;c->distance=1024;c->speed=6;}
+    /* Key and puzzle use share 428520. Both retain the normal chase
+       movement divisor (10, restored by CalculateCamera at 411ee2). */
+    else if(state==42 || state==43){c->angle=-14560;c->elevation=-4550;c->distance=1024;c->speed=10;}
     else if(state==46){c->angle=30940;c->elevation=-4550;} /* 0x428550 */
     else if(state==56)c->elevation=-3640;
     else if(state==57)c->elevation=5460;

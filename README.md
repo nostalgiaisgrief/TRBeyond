@@ -48,7 +48,7 @@ Here is the list of things currently on the plan.
 
 | Game | Main Campaign | Expansion | PC Souce | PS1 Source | TPS | FPS | VR | Multiplayer |
 | --- | :---: | :---: | :---: | :---: | :---: | :---: | :---: | :---: |
-| Tomb Raider | ✅ | ✅ | ✅ | ✅ | 🟨 | ✅ | 🟨 | 🟧 |
+| Tomb Raider | ✅ | 🟨 | ✅ | ✅ | 🟨 | ✅ | 🟨 | 🟧 |
 | Tomb Raider II | 🟨 | 🟧 | ✅ | 🟧 | ⬜ | ⬜ | ⬜ | ⬜ |
 | Tomb Raider III | 🟧 | ⬜ | 🟧 | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |
 | Tomb Raider: TLR | 🟧 | ⬜ | 🟧 | ⬜ | ⬜ | ⬜ | ⬜ | ⬜ |

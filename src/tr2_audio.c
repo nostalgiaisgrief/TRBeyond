@@ -19,6 +19,7 @@ static TombSoundMixer music_mixer;
 static TombSoundBank music_bank;
 static TombSoundSample music_sample;
 static int inventory_open,output_paused;
+static int background_track=-1,background_poll,music_looping;
 void tr2_audio_volume(int music,int effects){music_volume=music<0?0:music>10?10:music;effects_volume=effects<0?0:effects>10?10:effects;tomb_sound_output_volume(music_output,music_volume);}
 static HWAVEOUT device;
 static WAVEHDR headers[BLOCKS];static int16_t output[BLOCKS][FRAMES*2];
@@ -81,12 +82,23 @@ static void play_music(int track,int loop,int restart){
                    the effects device remains available for inventory sounds. */
                 tomb_sound_output_update(music_output,inventory_open || output_paused);
                 tomb_sound_output_track(music_output,&music_bank,&music_sample,&sample,loop,32767,music_volume);
-                free(music);music=p;last_track=track;
+                free(music);music=p;last_track=track;music_looping=loop;
             }else free(p);
         }else free(p);}
     }
 }
+/* TR2 0x455640 checks the CD transport every 150 ticks and restarts
+   the remembered loop from its beginning once the one-shot has stopped. */
+static void check_background_music(void){
+    if(background_track<2 || !music_output || inventory_open || output_paused)return;
+    if(--background_poll>0)return;
+    background_poll=150;
+    if(!music_looping && (uint64_t)tomb_sound_output_track_samples(music_output)*music_sample.rate >=
+                         (uint64_t)music_sample.frames*TOMB_SOUND_RATE)
+        play_music(background_track,1,1);
+}
 void tr2_audio_tick(const Tr2Level *l,const Tr2Actor *a,const Tr2World *w){
+    check_background_music();
     if(!device)return;for(int i=0;i<VOICE_COUNT-1;i++)if(voices[i].loop && !--voices[i].loop)voices[i].sample.data=NULL;
     for(unsigned i=0;i<l->sounds.count;i++){
         Tr2Position p;int id=tr2_sound_source(l,i,w->flip_status,&p);if(id<0)continue;
@@ -124,22 +136,39 @@ void tr2_audio_pump(void){
         }waveOutWrite(device,headers+block,sizeof headers[block]);
     }
 }
-void tr2_audio_close(void){tomb_sound_output_close(music_output);music_output=NULL;inventory_open=output_paused=0;if(device){waveOutReset(device);for(int i=0;i<BLOCKS;i++)waveOutUnprepareHeader(device,headers+i,sizeof headers[i]);waveOutClose(device);device=NULL;}free(samples);free(sfx);free(music);samples=NULL;sfx=music=NULL;sample_count=0;memset(voices,0,sizeof voices);last_track=-1;}
+void tr2_audio_close(void){tr2_audio_stop_music();inventory_open=output_paused=0;if(device){waveOutReset(device);for(int i=0;i<BLOCKS;i++)waveOutUnprepareHeader(device,headers+i,sizeof headers[i]);waveOutClose(device);device=NULL;}free(samples);free(sfx);samples=NULL;sfx=NULL;sample_count=0;memset(voices,0,sizeof voices);}
 
 
-void tr2_audio_cut_music(int track){if(device)play_music(track,0,0);}
-void tr2_audio_level_music(int track){if(device)play_music(track,1,0);}
+void tr2_audio_cut_music(int track){background_track=-1;if(device)play_music(track,0,1);}
+void tr2_audio_level_music(int track){background_track=track;background_poll=30;if(device)play_music(track,1,1);}
 
 void tr2_audio_menu(const Tr2Level *l,int sound){Tr2Actor origin={0};play_sample(l,sound,&origin,&origin,65536);}
-void tr2_audio_stop_music(void){last_track=-1;tomb_sound_output_close(music_output);music_output=NULL;free(music);music=NULL;memset(&music_sample,0,sizeof music_sample);}
+void tr2_audio_stop_music(void){background_track=last_track=-1;tomb_sound_output_close(music_output);music_output=NULL;free(music);music=NULL;memset(&music_sample,0,sizeof music_sample);}
 int tr2_audio_music_cue(void){return music_output?last_track:-1;}
 int tr2_audio_music_active(void){return music_output!=NULL;}
+
+int tr2_audio_secret_return_test(int level_track){
+    if(level_track<2 || last_track!=secret_track || music_looping)return 0;
+    ULONGLONG deadline=GetTickCount64()+12000;
+    while(last_track==secret_track && GetTickCount64()<deadline){
+        Sleep(33);
+        check_background_music();
+    }
+    return last_track==level_track && music_looping;
+}
 
 
 
 
 void tr2_audio_pause(int paused){output_paused=paused;if(device){if(paused)waveOutPause(device);else waveOutRestart(device);}tomb_sound_output_update(music_output,inventory_open || output_paused);}
-void tr2_audio_inventory(int open){inventory_open=open;tomb_sound_output_update(music_output,inventory_open || output_paused);}
+void tr2_audio_inventory(int open){
+    /* DisplayInventory (422110) stops active samples before the opening cue. */
+    if(open && !inventory_open){
+        memset(voices,0,sizeof voices);
+        if(device)waveOutReset(device);
+    }
+    inventory_open=open;tomb_sound_output_update(music_output,inventory_open || output_paused);
+}
 
 int tr2_audio_inventory_test(void){
     if(!music_output || !device || !music_sample.frames)return 0;

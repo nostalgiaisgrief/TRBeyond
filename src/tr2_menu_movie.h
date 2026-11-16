@@ -99,8 +99,27 @@ done:
  if(texture)glDeleteTextures(1,&texture);tomb_movie_close(&movie);
  glViewport(0,0,width,height);glClearColor(0,0,0,1);glClear(GL_COLOR_BUFFER_BIT);SwapBuffers(host->dc);return ok;
 }
-static void menu_reset(void){ring_history=0;death_passport=0;lock_ring=0;if(home_session)inventory_refresh();new_game_page=PASSPORT;game_ring=ring_switch=switch_pitch=flare_pick=0;memset(ring_memory,0,sizeof ring_memory);memset(ring_items,0,sizeof ring_items);title_selection=title_page=title_choice=return_item=return_frame=turning=turn_ticks=ring_exit=ring_held_key=0;title_angle=ring_open=ring_fraction=0;control_capture=-1;running=1;}
+static void menu_reset(void){ring_history=0;death_passport=passport_shortcut=0;lock_ring=0;if(home_session)inventory_refresh();new_game_page=PASSPORT;game_ring=ring_switch=switch_pitch=flare_pick=0;memset(ring_memory,0,sizeof ring_memory);memset(ring_items,0,sizeof ring_items);title_selection=title_page=title_choice=return_item=return_frame=turning=turn_ticks=ring_exit=ring_held_key=0;title_angle=ring_open=ring_fraction=0;control_capture=-1;running=1;}
 static void test_settle(void){ring_held_key=0;for(int i=0;i<240;i++)menu_tick(1.0/60);}
+static int look_state_test(void){
+ Tr2Actor lara={0};Tr2Look view={0};lara.control.health=1000;
+ uint32_t keys=TR2_LOOK|TR2_LEFT|TR2_FORWARD;
+ lara.control.current=42; /* Enter and remain in the use-key animation. */
+ if(tr2_look_input(&view,&lara,keys)!=(TR2_LOOK|TR2_FORWARD))return 0;
+ if(tr2_look_input(&view,&lara,keys)!=keys || view.active)return 0;
+ lara.control.current=2;
+ if(tr2_look_input(&view,&lara,keys)!=(TR2_LOOK|TR2_LEFT))return 0;
+ if(tr2_look_input(&view,&lara,keys)!=TR2_LOOK)return 0;
+ lara.control.current=55;
+ if(tr2_look_input(&view,&lara,keys)!=(TR2_LOOK|TR2_FORWARD))return 0;
+ const int vertical_states[]={10,13,56};
+ for(unsigned i=0;i<3;i++){
+  lara.control.current=vertical_states[i];
+  if(tr2_look_input(&view,&lara,keys)!=TR2_LOOK || !view.active)return 0;
+ }
+ lara.extra_animation=1;lara.control.current=2;
+ return tr2_look_input(&view,&lara,keys)==keys && !view.active;
+}
 static int settings_roundtrip_test(void){
  char directory[MAX_PATH],temporary[MAX_PATH],saved_path[MAX_PATH];int saved_keys[14],music=title_music,effects=title_effects,layout=control_layout,framerate=title_framerate,resolution=title_resolution,filtering=title_filtering,force43=title_force43,water_style=title_water_style,distance=title_draw_distance;
  memcpy(saved_path,config_path,sizeof saved_path);memcpy(saved_keys,control_keys,sizeof saved_keys);
@@ -207,10 +226,14 @@ static int weapon_cheats_test(void){
   }
   title_key(VK_ESCAPE);test_settle();title_key(VK_ESCAPE);test_settle();
   if(!home_transition() || !home_playing || !tr2_home_weapon_test())return 0;
-  const int guns[]={1,2,4,3,5,6,7};
+  const int guns[]={1,4,2,3,5,6,7};
   for(int n=0;n<7;n++){
-   title_key('1'+n);
-   for(int tick=0;tick<180 && (w->combat->weapon!=guns[n] || w->lara->gun_status!=4);tick++)tr2_home_update(1.0/30,0);
+   LPARAM scan=(LPARAM)((n+2)<<16)|1;
+   WPARAM key=i?VK_OEM_1:(WPARAM)('1'+n);
+   SendMessageA(host->window,WM_KEYDOWN,key,scan);
+   if(!i)SendMessageA(host->window,WM_KEYUP,key,scan|(LPARAM)0xc0000000u);
+   for(int tick=0;tick<180 && (w->combat->weapon!=guns[n] || w->lara->gun_status!=4);tick++)tr2_home_update(1.0/30,home_input());
+   if(i)SendMessageA(host->window,WM_KEYUP,key,scan|(LPARAM)0xc0000000u);
    if(w->combat->weapon!=guns[n] || w->lara->gun_status!=4){fprintf(stderr,"quick key %d: weapon %d requested %d status %d health %d\n",n+1,w->combat->weapon,w->combat->requested,w->lara->gun_status,w->lara->control.health);return 0;}
   }
  }
@@ -269,6 +292,7 @@ static int menu_self_test(void){
  menu_reset();menu_tick(1.5/60);
  if(ring_fraction!=.5 || ring_lerp(previous_radius,ring_radius())!=ring_radius()*.5)return 0;
  title_render();
+ if(ring_selection_sound(121)!=113)return 0;
  for(int id=157;id<=163;id++)if(ring_selection_sound(id)!=114)return 0;
  menu_reset();
  if(!weapon_cheats_test()){fprintf(stderr,"weapon cheats test failed\n");return 0;}
@@ -321,12 +345,55 @@ static int menu_self_test(void){
   if(index==1){
    if(!tr2_wall_ammo_hud_test() || !tr2_wall_water_fog_test())return 0;
    const Tr2World *w=tr2_level_world();if(w->rewards[6]!=1 || w->rewards[13]!=2 || w->rewards[15]!=1)return 0;
+   /* Select the shotgun and a small medipack from the live ring. */
+   for(int pass=0;pass<2;pass++){
+    int pickup=pass?149:136,id=pickup_model(pickup);
+    int health=w->lara->control.health,quantity=w->inventory->count[pickup],requested=w->combat->requested;
+    Tr2Actor *test_lara=(Tr2Actor *)w->lara;
+    int medipacks=w->inventory->medipacks;
+    if(pass){w->inventory->count[pickup]=1;test_lara->control.health=300;}
+    int before_ring=w->inventory->ticks;
+    title_key(VK_ESCAPE);test_settle();
+    if(w->inventory->ticks-before_ring!=120)return 0;
+    for(int i=0;i<ring_count() && ring_id(title_selection)!=id;i++){title_key(control_keys[2]);test_settle();}
+    if(ring_id(title_selection)!=id)return 0;
+    title_key(VK_RETURN);
+    for(int tick=0;tick<180 && !return_item;tick++)menu_tick(1.0/60);
+    if(!return_item || ring_items[id].frame!=menu_descriptor(id)->open)return 0;
+    for(int tick=0;tick<80 && !pending_transition;tick++){
+     menu_tick(1.0/60);
+     if(ring_items[id].frame!=menu_descriptor(id)->open || w->combat->requested!=requested ||
+        (pass && (w->inventory->count[pickup]!=1 || w->lara->control.health!=300)))return 0;
+    }
+    if(pending_transition!=2 || ring_open || !home_transition())return 0;
+    if(pass?(w->inventory->count[pickup]!=0 || w->lara->control.health!=800):w->combat->requested!=4)return 0;
+    w->inventory->count[pickup]=quantity;w->inventory->medipacks=medipacks;test_lara->control.health=health;w->combat->requested=requested;
+   }
    title_key(VK_ESCAPE);test_settle();if(ring_count()!=6)return 0;
    title_key(VK_DOWN);test_settle();title_key(VK_RETURN);test_settle();title_key(VK_RIGHT);test_settle();title_key(VK_RETURN);
    if(campaign_screen!=SAVE_SLOTS)return 0;title_key(VK_RETURN);
    menu_tick(10.0/60);if(ring_open!=1 || ring_items[133].frame>=19 || !return_item)return 0;
    test_settle();if(!home_transition() || !home_playing || scan_slots()<0)return 0;
-   open_slots(0);title_key(VK_RETURN);if(!home_transition() || !home_playing || current_level!=1)return 0;
+   for(int key=VK_F5;key<=VK_F6;key++){
+    SendMessageA(host->window,WM_KEYDOWN,key,1);SendMessageA(host->window,WM_KEYUP,key,1);
+    if(home_playing || game_ring!=OPTION_RING || campaign_screen!=PLAY || ring_open!=0)return 0;
+    test_settle();
+    if(campaign_screen!=(key==VK_F5?SAVE_SLOTS:LOAD_SLOTS) || !page_ready() || title_choice!=(key==VK_F5))return 0;
+    title_key(VK_ESCAPE);title_key(VK_ESCAPE);test_settle();title_key(VK_ESCAPE);test_settle();
+    if(!home_transition() || !home_playing)return 0;
+   }
+   for(int from_title=0;from_title<=1;from_title++){
+    if(from_title){if(!return_to_title())return 0;test_settle();}
+    else{title_key(VK_ESCAPE);test_settle();title_key(VK_DOWN);test_settle();}
+    title_key(VK_RETURN);test_settle();title_key(VK_RETURN);
+    if(campaign_screen!=LOAD_SLOTS || ring_items[133].frame!=14)return 0;
+    title_key(VK_RETURN);menu_tick(10.0/60);
+    if(pending_transition || home_playing || ring_open!=1 || ring_items[133].frame>=14 || ring_items[133].lift!=16)return 0;
+    for(int tick=0;tick<60 && return_item;tick++)menu_tick(1.0/60);
+    if(!ring_items[133].closed || ring_items[133].lift || ring_open!=1)return 0;
+    menu_tick(1.0/60);if(ring_open>=1 || pending_transition)return 0;
+    test_settle();if(ring_open || pending_transition!=4 || !home_transition() || !home_playing || current_level!=1)return 0;
+   }
    if(!tr2_home_presentation_test(1))return 0;campaign_events();test_settle();
    if(!death_passport || ring_count()!=3 || campaign_screen!=LOAD_SLOTS || title_page!=1)return 0;
    title_key(VK_ESCAPE);if(campaign_screen!=LOAD_SLOTS)return 0;
@@ -346,6 +413,8 @@ static int menu_self_test(void){
     title_render();title_key(VK_RETURN);test_settle();if(!home_transition() || !tr2_wall_key_test(key,2))return 0;
    }
    if(!tr2_wall_reward_test())return 0;
+   if(!tr2_audio_secret_return_test(level_music[1]))return 0;
+   fprintf(stderr,"TR2B Great Wall background music restarts after secret cue: PASS\n");
    fprintf(stderr,"TR2B real key pickups, lock ring, key consumption, both doors and dragon reward: PASS\n");
    char path[MAX_PATH];slot_path(path,slot_cursor);DeleteFileA(path);scan_slots();
    /* Finish with the secret reward selected. Venice resets the selection
@@ -494,9 +563,17 @@ int tr2_menu_run(const Tr2MenuHost *platform,int argc,char **argv){
   test_settle();title_key(VK_RIGHT);test_settle();title_key(VK_RETURN);test_settle();
   ok=title_page==5 && page_ready();if(ok){title_key(VK_RETURN);test_settle();ok=pending_transition==1 && home_transition() && home_playing && tr2_home_check(0);}
   if(ok && home_test){
-   ok=tr2_home_depth_check(width,height);ok=ok && tr2_home_distance_test();
+   ok=look_state_test() && tr2_home_depth_check(width,height);ok=ok && tr2_home_distance_test();
    if(ok && shot){for(int mode=0;mode<DRAW_DISTANCE_COUNT && ok;mode++){char path[96];tr2_home_draw_distance(mode);tr2_home_render(width,height);snprintf(path,sizeof path,"build/tr2-distance-%d.ppm",mode);ok=capture_image(path);}tr2_home_draw_distance(title_draw_distance);}
    SendMessageA(host->window,WM_KEYDOWN,(WPARAM)control_keys[0],1);
+   title_key(VK_ESCAPE);test_settle();title_key(VK_ESCAPE);test_settle();
+   ok=ok && pending_transition==2 && home_transition() && (home_input()&TR2_FORWARD);
+   title_key(VK_ESCAPE);test_settle();title_key(VK_ESCAPE);
+   SendMessageA(host->window,WM_KEYUP,(WPARAM)control_keys[0],1);
+   test_settle();ok=ok && pending_transition==2 && home_transition() && !(home_input()&TR2_FORWARD);
+   title_key(VK_ESCAPE);test_settle();title_key(VK_ESCAPE);
+   SendMessageA(host->window,WM_KEYDOWN,(WPARAM)control_keys[0],1);
+   test_settle();ok=ok && pending_transition==2 && home_transition() && (home_input()&TR2_FORWARD);
    for(int i=0;i<90;i++)tr2_home_update(1.0/30,home_input());
    SendMessageA(host->window,WM_KEYUP,(WPARAM)control_keys[0],1);
    int music_ok=tr2_audio_inventory_test();fprintf(stderr,"TR2 inventory music cursor pause/resume, menu output and focus: %s\n",music_ok?"PASS":"FAIL");ok=ok && music_ok;

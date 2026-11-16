@@ -45,7 +45,7 @@ static int cinematic_cut(int frame){
     }
     return 0;
 }
-static void render_capture(void){
+static void render_capture(int advance_hair){
     if(!render_entries)return;
     render_tick++;render_recording=1;glMatrixMode(GL_MODELVIEW);glPushMatrix();
     int frame=world.cinematic_active?world.cinematic_frame:-1;
@@ -55,14 +55,16 @@ static void render_capture(void){
     memcpy(render_lights[1],world.hazards->lights,sizeof render_lights[1]);render_light_count[1]=world.hazards->light_count;
     if(render_tick==1){memcpy(render_lights[0],render_lights[1],sizeof render_lights[0]);render_light_count[0]=render_light_count[1];}
     render_begin_entry(0,&actor,0);render_capture_model(&actor,0,UINT64_MAX,0);
+    if(advance_hair || !hair_state.ready)braid_update();
     for(unsigned i=0;i<world.count;i++){
-        const Tr2Object *o=world.objects+i;if((int)i==level->lara || o->listed_room<0 || o->status==3 || (o->flags&0x8000))continue;
+        const Tr2Object *o=world.objects+i;if((int)i==level->lara || o->listed_room<0 || o->status==3 || (o->flags&0x8000) || dummy_draw_item(o->id))continue;
         render_begin_entry(1+i,&o->pose,o->id);model_creature=world.creatures+i;
         render_capture_model(&o->pose,o->id==13 && o->snow.drive.armed?51:o->id,tr2_object_mesh_mask(o),(o->id==13 || o->id==51)?o->effect_counter:0);model_creature=NULL;
-        if(cut1_laptop && o->id==128){
-            /* CUT1 flips picture panels by half a turn to exchange slides.
-               Keep the smaller authored turns that bring the first slide in. */
-            for(int panel=1;panel<=6;panel++){
+        if(o->id==103 || (cut1_laptop && o->id==128)){
+            /* The push button flips its face in one tick. CUT1 uses the
+               same half-turn to exchange slides on the laptop. */
+            int last_panel=o->id==103?1:6;
+            for(int panel=1;panel<=last_panel;panel++){
                 TombRenderNode *n=&render_entry->pose.nodes[panel];
                 float trace=0;
                 for(int col=0;col<3;col++)for(int row=0;row<3;row++)
@@ -117,7 +119,7 @@ static void render_capture(void){
 void tr2_home_interpolation_reset(void){
     if(!level || !render_entries)return;
     memset(render_entries,0,render_count*sizeof *render_entries);render_tick=0;accumulator=0;
-    render_capture();render_alpha=1;update_eye();
+    render_capture(0);render_alpha=1;update_eye();
 }
 static int render_visible_entry(size_t index,int room,const uint8_t *visible){
     if(room>=0 && (unsigned)room<level->room_count && visible[room])return 1;

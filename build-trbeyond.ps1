@@ -48,7 +48,7 @@ if ($RunTests) { $testDefines += '-DTOMB_BUILD_TESTS' }
 $optimization = if ($Debug) { '-O0' } else { '-O2' }
 $outputName = if ($Debug) { 'tomb_preview_debug.exe' } else { 'tomb_preview.exe' }
 $sourceNames = @('enemies.c','creature_move.c','navigation.c','creature.c','pistols.c','hazards.c','dos_camera.c','object_contact.c','objects.c','slide.c','sound_win.c','sound.c','coop_lan.c','preview.c','room_visibility.c','gym.c','follow_camera.c','air.c','water.c','ledge.c','playtest.c','movement.c','animation.c','ground.c','collision.c','terrain.c','static.c','preview_pose.c','preview_camera.c','level.c','visual.c','lara_start.c','geometry.c','item_height.c')
-$sourceNames += 'vr.c','shooter.c','atlantean.c','cinematic.c','movie.c','folly.c','peru.c','render_interpolation.c','lighting.c','ui_dialog.c','save.c','city.c','combat.c','combat_fixture.c','interface.c','ring.c','text.c','inventory.c','pickup.c','pickup_runtime.c','progression.c'
+$sourceNames += 'tr3_title.c','tr3_level.c','vr.c','shooter.c','atlantean.c','cinematic.c','movie.c','folly.c','peru.c','render_interpolation.c','lighting.c','ui_dialog.c','save.c','city.c','combat.c','combat_fixture.c','interface.c','ring.c','text.c','inventory.c','pickup.c','pickup_runtime.c','progression.c'
 $sources = $sourceNames | ForEach-Object { Join-Path $PSScriptRoot "src\$_" }
 $sources += (Join-Path $PSScriptRoot 'src/tr2_level.c'),(Join-Path $PSScriptRoot 'src/tr2_menu.c')
 # TR2 object contact, triggers and camera form one dependency graph.
@@ -97,7 +97,7 @@ if ($LASTEXITCODE -ne 0) { throw "Camera test compilation failed: $LASTEXITCODE"
 if ($LASTEXITCODE -ne 0) { throw "Camera orientation test failed: $LASTEXITCODE" }
 
 $playtestName = if ($Debug) { 'playtest_test_debug.exe' } else { 'playtest_test.exe' }
-$playtestSources = $sources | Where-Object { [IO.Path]::GetFileName($_) -notin @('preview.c','sound_win.c','coop_lan.c','tr2_menu.c','tr2_home.c','tr2_audio.c') }
+$playtestSources = $sources | Where-Object { [IO.Path]::GetFileName($_) -notin @('preview.c','sound_win.c','coop_lan.c','tr2_menu.c','tr2_home.c','tr2_audio.c','tr3_title.c') }
 & $compiler cc -target x86_64-windows-gnu -std=c11 $optimization -g -Wall -Wextra -Werror -pedantic -I (Join-Path $PSScriptRoot 'src') @playtestSources (Join-Path $PSScriptRoot 'tests\playtest_test.c') -o (Join-Path $PSScriptRoot "build\$playtestName")
 if ($LASTEXITCODE -ne 0) { throw "Ground integration test compilation failed: $LASTEXITCODE" }
 & (Join-Path $PSScriptRoot "build\$playtestName") (Join-Path $PSScriptRoot 'work\reference-assets\DATA\GYM.PHD') (Join-Path $PSScriptRoot 'work\reference-assets\sine.bin')

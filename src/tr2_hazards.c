@@ -21,7 +21,16 @@ void tr2_venice_sound_tick(Tr2World *w,Tr2Object *o){
 }
 static int frames(const Tr2Level *l,int id){for(uint32_t i=0;i<l->sequences.count;i++){const uint8_t *p=l->sequences.data+i*8;if(tr2_i32(p)==id)return -tr2_i16(p+4);}return 0;}
 static Tr2Fragment *effect(Tr2World *w,int id,int owner,int x,int y,int z,int room){
-    for(int i=0;i<TR2_MAX_EFFECTS;i++)if(!w->hazards->effects[i].active){Tr2Fragment *f=w->hazards->effects+i;memset(f,0,sizeof *f);f->active=1;f->object=(int16_t)id;f->room=(int16_t)room;f->x=x;f->y=y;f->z=z;w->hazards->owner[i]=owner;return f;}return NULL;
+    for(int i=0;i<TR2_MAX_EFFECTS;i++)if(!w->hazards->effects[i].active){
+        Tr2Fragment *f=w->hazards->effects+i;
+        /* CreateBubble (41c880) leaves both drift angles in the reused slot. */
+        int16_t yaw=f->yaw,pitch=f->pitch;
+        *f=(Tr2Fragment){.active=1,.shade=4096,.object=(int16_t)id,.room=(int16_t)room,.x=x,.y=y,.z=z};
+        if(id==231){f->yaw=yaw;f->pitch=pitch;}
+        w->hazards->owner[i]=owner;
+        return f;
+    }
+    return NULL;
 }
 /* Barkhang blades (442750), ice bowl (434cc0), springboard (441b00)
    and shot bell (434db0). Heavy triggers belong to the object's sector. */
@@ -198,6 +207,24 @@ void tr2_wake_tick(Tr2Fragment *f,int count){
     if(!f->counter || f->fall_speed>0){f->active=0;return;}
     f->z+=tr2_asr(f->speed*tr2_cos(f->yaw),14);f->x+=tr2_asr(f->speed*tr2_sin(f->yaw),14);
     if(f->fall_speed){f->y+=f->fall_speed;f->fall_speed=tr2_word(f->fall_speed+6);}
+}
+static int waterfall_offset(uint32_t *random){
+    *random=*random*0x41c64e6du+12345;
+    return (((int)((*random>>10)&32767)-16384)*1024)/32767;
+}
+/* WaterfallMistControl 0x41cde0. Each nearby source emits a stationary
+   splash sprite, lit at the source, and requests the waterfall sound. */
+void tr2_waterfall_tick(const Tr2Level *l,Tr2World *w,Tr2Actor *source,const Tr2Actor *lara){
+    if(abs(source->x-lara->x)>10240 || abs(source->y-lara->y)>10240 || abs(source->z-lara->z)>10240)return;
+    Tr2Fragment *f=effect(w,230,-2,source->x,source->y,source->z,source->room);
+    if(f){
+        f->x+=waterfall_offset(&w->hazards->random_draw);
+        f->z+=waterfall_offset(&w->hazards->random_draw);
+        Tr2Light light;
+        tr2_room_light(l,source->room,source->x,source->y,source->z,0,0,&light);
+        f->shade=tr2_word(light.shade);
+    }
+    sound(source,79);
 }
 /* Splash 0x41ca70 and SplashControl 0x41cb40. */
 void tr2_splash(const Tr2Level *l,Tr2World *w,const Tr2Actor *p){

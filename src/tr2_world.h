@@ -5,6 +5,7 @@
 #include "tr2_boat.h"
 #include "tr2_snowmobile.h"
 #include "tr2_stopwatch.h"
+enum { TR2_CAMERA_FIXED=1, TR2_CAMERA_LOOK=2, TR2_CAMERA_COMBAT=3, TR2_CAMERA_HEAVY=5 };
 typedef struct {uint8_t *sector;uint8_t saved[8];int box;} Tr2DoorSector;
 typedef struct {Tr2Actor pose;int id,active,status;uint16_t flags;int16_t timer;Tr2DoorSector door[4];int next_room,listed_room;uint64_t mesh_mask;union {Tr2Boat boat;Tr2Snowmobile snow;};int carried;int lift_origin,lift_wait;int floor,effect_counter;int linked[2];} Tr2Object;
 typedef struct {int16_t exit;uint16_t search;int16_t next,box;} Tr2LotNode;
@@ -99,6 +100,7 @@ void tr2_snow_view_tick(const Tr2Level *l,Tr2World *w,int index,Tr2Actor *a,uint
 int tr2_player_object_contacts(const Tr2Level *l,Tr2Actor *a,uint32_t input,Tr2Contact *contact);
 int tr2_boat_contact(const Tr2Level *l,Tr2World *w,int index,Tr2Actor *a,uint32_t input,Tr2Contact *contact);
 void tr2_splash(const Tr2Level *l,Tr2World *w,const Tr2Actor *a);
+void tr2_waterfall_tick(const Tr2Level *l,Tr2World *w,Tr2Actor *source,const Tr2Actor *lara);
 void tr2_splash_tick(Tr2Fragment *f,int count);
 int tr2_detonator_contact(const Tr2Level *l,Tr2World *w,Tr2Object *o,Tr2Actor *a,uint32_t input,Tr2Contact *contact);
 int tr2_detonator_use(const Tr2Level *l,Tr2World *w,Tr2Object *o,Tr2Actor *a,uint32_t input);

@@ -58,6 +58,12 @@ int tr2_load_save(const char *path,Tr2Level *l,Tr2World *w,Tr2Actor *a,Tr2Water 
     /* All validation and allocation finishes before changing the live world. */
     if(s.world.flip_status!=w->flip_status)tr2_flip_rooms(l);
     for(uint32_t i=0;i<w->count;i++){Tr2Object o;transfer(&p,&o,sizeof o,1);for(int j=0;j<4;j++)o.door[j].sector=w->objects[i].door[j].sector;/* Earlier builds stored these unsupported enemies with zero health. */
+        /* Older snapshots retained the placement bit in the runtime flags.
+           Removed items are unlinked and must keep their removal flag. */
+        if(i<l->items.count && (tr2_u16(l->items.data+i*24+22)&0x8000) && !(o.pose.control.flags&0x100)){
+            o.pose.control.flags|=0x100;
+            if(o.listed_room>=0)o.flags&=0x7fff;
+        }
         if(((h.version<3 && tr2_tibetan_enemy(o.id)) || (h.version<4 && tr2_xian_enemy(o.id))) && o.pose.control.health==0){
             o.pose.control.health=w->objects[i].pose.control.health;
             o.status=o.active?1:w->objects[i].status;
@@ -74,6 +80,7 @@ int tr2_load_save(const char *path,Tr2Level *l,Tr2World *w,Tr2Actor *a,Tr2Water 
     /* Normalize terminal corpses after restoring state, while preserving
        enemies whose death animations have not yet finished. */
     for(uint32_t i=0;i<w->count;i++){Tr2Object *o=w->objects+i;
+        if(o->id>=106 && o->id<=113 && o->listed_room>=0)tr2_world_room(w,(int)i,o->pose.room);
         if(o->status==2 && o->pose.control.health<=0 && ((o->id>=15 && o->id<=18) || o->id==20 || o->id==21 || o->id==30 || o->id==31 || o->id==34 || (o->id==32 || o->id==33) || o->id==36 || o->id==38 || tr2_xian_enemy(o->id) || tr2_tibetan_enemy(o->id) || o->id==47 || o->id==49 || o->id==50 || o->id==51 || o->id==39 || o->id==214))tr2_enemy_finish(w,(int)i);}
     if((uint32_t)w->combat->target<w->count){Tr2Object *target=w->objects+w->combat->target;
         if((target->flags&0x8000) || (target->status==3 && target->pose.control.health<=0))w->combat->target=-1;

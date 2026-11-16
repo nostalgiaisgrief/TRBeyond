@@ -48,6 +48,9 @@ int tr2_world_init(Tr2Level *l,Tr2World *w){
         Tr2Object *o=w->objects+i;Tr2Actor *a=&o->pose;const uint8_t *p=l->items.data+i*24;o->mesh_mask=UINT64_MAX;o->id=tr2_u16(p);o->flags=tr2_u16(p+22);a->room=tr2_i16(p+2);a->x=tr2_i32(p+4);a->y=tr2_i32(p+8);a->z=tr2_i32(p+12);a->yaw=a->move_angle=tr2_i16(p+16);a->water_distance=TR2_NO_HEIGHT;
         /* InitialiseItem (426f23) enables contact before the object initializer. */
         a->control.flags|=32;
+        /* InitialiseItem (426f69) transfers the placement's clear-body bit.
+           Runtime item flag 0x8000 is reserved for an item that was removed. */
+        if(o->flags&0x8000){a->control.flags|=0x100;o->flags&=0x7fff;}
         o->listed_room=a->room;o->next_room=w->room_head[a->room];w->room_head[a->room]=(int)i;
         /* InitialiseItem 0x426fd8 caches the placement sector's raw floor. */
         if(o->id==13)o->snow.momentum=a->yaw;
@@ -92,7 +95,7 @@ int tr2_world_init(Tr2Level *l,Tr2World *w){
             int dx=a->yaw==16384?-1024:a->yaw==-16384?1024:0,dz=a->yaw==0?-1024:a->yaw==-32768?1024:0;
             door_save(l,&o->door[0],a->room,a->x+dx,a->z+dz);door_save(l,&o->door[1],l->rooms[a->room].alternate,a->x+dx,a->z+dz);
             int next=o->door[0].sector?door_room(l,o->door[0].sector):255;
-            if(next>=0 && next!=255 && (uint32_t)next<l->room_count){door_save(l,&o->door[2],next,a->x,a->z);door_save(l,&o->door[3],l->rooms[next].alternate,a->x,a->z);}
+            if(next>=0 && next!=255 && (uint32_t)next<l->room_count){door_save(l,&o->door[2],next,a->x,a->z);door_save(l,&o->door[3],l->rooms[next].alternate,a->x,a->z);tr2_world_room(w,(int)i,next);}
         }
     }
     for(uint32_t i=0;i<w->count;i++)if(w->objects[i].id>=106 && w->objects[i].id<=113)door_set(l,w->objects+i,0);
@@ -114,7 +117,14 @@ void tr2_finish_guarded(Tr2World *w,const Tr2Object *o,const Tr2Actor *a){
     if(abs(a->x-o->pose.x)<1024 && abs(a->z-o->pose.z)<1024 && !(a->control.flags&8) && a->y==o->pose.y)w->finished=1;
 }
 void tr2_world_room(Tr2World *w,int index,int room){
-    if((uint32_t)index>=w->count || room< -1 || room>=1024)return;Tr2Object *o=w->objects+index;if(room==o->listed_room)return;
+    if((uint32_t)index>=w->count || room< -1 || room>=1024)return;Tr2Object *o=w->objects+index;
+    /* InitialiseDoor (435558) links the item across the portal, then restores
+       its pose room for lighting and floor operations. */
+    if(room>=0 && room==o->pose.room && o->id>=106 && o->id<=113 && o->door[2].sector){
+        int next=door_room(w->level,o->door[0].saved);
+        if(next!=255 && (uint32_t)next<w->level->room_count)room=next;
+    }
+    if(room==o->listed_room)return;
     if(o->listed_room>=0 && o->listed_room<1024){int *link=w->room_head+o->listed_room;for(uint32_t n=0;n<w->count && *link>=0 && (uint32_t)*link<w->count;n++){if(*link==index){*link=o->next_room;break;}link=&w->objects[*link].next_room;}}
     o->next_room=room>=0?w->room_head[room]:-1;o->listed_room=room;if(room>=0)w->room_head[room]=index;
 }
@@ -274,10 +284,13 @@ void tr2_world_trigger(const Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t at,int
     /* Refresh the camera before checking the switch state (original 0x4150d0). */
     unsigned scan=at+(type==2 || type==3 || type==4);
     int flip=0,flip_command=0,pending_effect=-1,pending_camera_target=-1,switch_off=0,refresh=2;
+    int manual_view=w->camera_active==TR2_CAMERA_COMBAT || w->camera_active==TR2_CAMERA_LOOK;
     for(unsigned limit=0;w->camera_active!=5 && limit<l->floors.count;limit++){
         int cmd=floor_word(l,scan++);if(cmd<0)break;int kind=(cmd>>10)&15,n=cmd&1023;
-        if(kind==1){scan++;refresh=0;if(n==w->camera_last){w->camera_index=n;if(w->camera_timer>=0){w->camera_active=1;refresh=1;}}}
-        else if(kind==6 && (uint32_t)n<w->count)w->camera_target=n;
+        if(kind==1){scan++;refresh=0;if(n==w->camera_last){w->camera_index=n;
+            if(manual_view)w->camera_timer=-1;
+            else if(w->camera_timer>=0){w->camera_active=TR2_CAMERA_FIXED;refresh=1;}}}
+        else if(kind==6 && !manual_view && (uint32_t)n<w->count)w->camera_target=n;
         if(cmd&32768)break;
     }
     if((uint32_t)w->camera_target<w->count && (!refresh || (refresh==2 &&
@@ -304,7 +317,7 @@ void tr2_world_trigger(const Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t at,int
                     if((o->id>=15 && o->id<=18) || o->id==20 || o->id==21 || o->id==25 || o->id==28 || o->id==29 || o->id==30 || o->id==31 || o->id==34 || (o->id==32 || o->id==33) || o->id==36 || o->id==38 || tr2_xian_enemy(o->id) || tr2_tibetan_enemy(o->id) || o->id==47 || o->id==49 || o->id==50 || o->id==51 || o->id==39 || o->id==214)o->status=tr2_enemy_enable(l,w,n)?1:3;else o->status=1;}}}
         }else if(kind==1){int camera=floor_word(l,at++);
             if((uint32_t)n<l->cameras.count && n<1024 && !w->camera_used[n])w->camera_index=n;
-            if((uint32_t)n<l->cameras.count && n<1024 && !w->camera_used[n] && type!=7 && (n!=w->camera_last || type==2) &&
+            if(!manual_view && (uint32_t)n<l->cameras.count && n<1024 && !w->camera_used[n] && type!=7 && (n!=w->camera_last || type==2) &&
                !(type==2 && (flags&255) && switch_off)){ /* Root 4155be..4155d2. */
                 w->camera_index=n;w->camera_timer=(camera&255)*30;w->camera_speed=((camera>>6)&248)+1;w->camera_active=heavy?5:1;
                 if(camera&256)w->camera_used[n]=1;
@@ -321,7 +334,7 @@ void tr2_world_trigger(const Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t at,int
     }
     /* Root 415636/4157fc defers the target until the command list ends;
        target-before-camera triggers must aim correctly on their first frame. */
-    if(w->camera_active && pending_camera_target>=0)w->camera_target=pending_camera_target;
+    if((w->camera_active==TR2_CAMERA_FIXED || w->camera_active==TR2_CAMERA_HEAVY) && pending_camera_target>=0)w->camera_target=pending_camera_target;
     if(flip)tr2_world_flip((Tr2Level *)l,w);
     if(pending_effect>=0 && (flip || !flip_command)){w->effect=pending_effect;w->flip_effect=pending_effect;w->flip_timer=0;}
 }
@@ -375,6 +388,19 @@ uint32_t tr2_world_look_input(Tr2World *w,const Tr2Actor *a,Tr2Look *look,uint32
     if(look->active){look->torso_yaw=(int16_t)yaw;look->torso_pitch=(int16_t)pitch;}
     return result;
 }
+/* LaraBaddieCollision (413620) visits Lara's room and its direct portals.
+   Other traps keep animating but cannot acquire Lara touch bits. */
+static uint32_t trap_touch(const Tr2Level *l,const Tr2Object *o,const Tr2Actor *a,int radius){
+    if(a->control.health<=0 || !(o->pose.control.flags&32) || o->status==3 ||
+       o->listed_room<0 || (unsigned)a->room>=l->room_count)return 0;
+    if(o->listed_room!=a->room){
+        const Tr2Span portals=l->rooms[a->room].portals;
+        unsigned i=0;
+        while(i<portals.count && tr2_u16(portals.data+i*32)!=o->listed_room)i++;
+        if(i==portals.count)return 0;
+    }
+    return tr2_object_overlap(l,&o->pose,a,radius)?tr2_touch(l,&o->pose,o->id,a,0):0;
+}
 void tr2_world_view_tick(Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t input,Tr2Look *look){
     w->lara=a;
     if(w->hazards){w->hazards->light_count=0;memset(w->hazards->lights,0,sizeof w->hazards->lights);}
@@ -402,7 +428,13 @@ void tr2_world_view_tick(Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t input,Tr2L
             else if(o->id==63 || o->id==66)tr2_object63_tick(l,w,o);
             else if(o->id==24)tr2_gondola_tick(l,w,o);
             else if(o->id==227)tr2_detonator_tick(l,w,o);
+            else if(o->id==191){
+                /* TR2 0x438f70 hides the triggered jade dragon and unlinks it from its room. */
+                o->status=3;
+                tr2_world_room(w,(int)i,-1);
+            }
             else if(o->id==222)tr2_mine_tick(l,w,o,a);
+            else if(o->id==244)tr2_waterfall_tick(l,w,&o->pose,a);
             else if(o->id==213 || o->id==215 || o->id==216)tr2_venice_sound_tick(w,o);
             else if(o->id==212)tr2_alarm_tick(w,o);
             else if(o->id==257 || o->id==258)tr2_home_sound_tick(o);
@@ -416,19 +448,19 @@ void tr2_world_view_tick(Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t input,Tr2L
             else if(o->id>=67 && o->id<=70)tr2_block_tick(l,w,o,a);
             else if(o->id==62 || o->id==253)tr2_emitter_tick(l,w,o,(int)i);
             else if(o->id==251)tr2_ember_emit(w,o);
-            else if(o->id==78){uint32_t touch=tr2_object_overlap(l,&o->pose,a,100)?tr2_touch(l,&o->pose,o->id,a,0):0;tr2_blade78_tick(l,w,o,a,touch);}
-            else if(o->id==76 || o->id==77 || o->id==94 || o->id==95){uint32_t touch=tr2_object_overlap(l,&o->pose,a,100)?tr2_touch(l,&o->pose,o->id,a,0):0;tr2_propeller_tick(l,w,o,a,touch);}
+            else if(o->id==78){uint32_t touch=trap_touch(l,o,a,100);tr2_blade78_tick(l,w,o,a,touch);}
+            else if(o->id==76 || o->id==77 || o->id==94 || o->id==95){uint32_t touch=trap_touch(l,o,a,100);tr2_propeller_tick(l,w,o,a,touch);}
             else if(o->id==84){
                 int radius=a->control.water_status==1?300:100;
-                uint32_t touch=tr2_object_overlap(l,&o->pose,a,radius)?tr2_touch(l,&o->pose,o->id,a,0):0;
+                uint32_t touch=trap_touch(l,o,a,radius);
                 tr2_icicle_tick(l,w,(int)i,a,touch);
             }
             else if(o->id==58 || o->id==96 || o->id==79){
-                uint32_t touch=tr2_object_overlap(l,&o->pose,a,100)?tr2_touch(l,&o->pose,o->id,a,0):0;
+                uint32_t touch=trap_touch(l,o,a,100);
                 if(o->id==79)tr2_falling_trap_tick(l,w,o,a,touch);else tr2_swinging_trap_tick(l,w,o,a,touch);
             }
             else if(o->id==80 || o->id==81 || o->id==82 || o->id==85){
-                uint32_t touch=tr2_object_overlap(l,&o->pose,a,100)?tr2_touch(l,&o->pose,o->id,a,0):0;
+                uint32_t touch=trap_touch(l,o,a,100);
                 if(o->id==82)tr2_pendulum_tick(l,w,o,a,touch);else tr2_wall_trap_tick(l,o,a,touch);
             }
             else if(o->id==114 || o->id==115){
@@ -451,13 +483,15 @@ void tr2_world_view_tick(Tr2Level *l,Tr2World *w,Tr2Actor *a,uint32_t input,Tr2L
         if(o->id==59 && tr2_object_overlap(l,&o->pose,a,100) && tr2_touch(l,&o->pose,o->id,a,0))tr2_spikes_contact(l,o,a);
         if((o->id==60 || o->id==83 || o->id==101) && !w->player_contacts_done && a->control.health>0){Tr2Contact c={0};c.radius=100;c.flags=24;c.old[0]=a->x;c.old[1]=a->y;c.old[2]=a->z;tr2_boulder_contact(l,w,o,a,&c);}
     }
-    Tr2Height h;if(w->vehicle<0 && tr2_query(l,a->x,a->y,a->z,a->room,&h,NULL))tr2_world_trigger(l,w,a,h.trigger,0);
     tr2_home_objects(l,w,a);
     for(int i=0;i<TR2_MAX_DARTS;i++){Tr2Object *o=w->hazards->darts+i;if(o->active && o->id==152)tr2_pickup_use(l,w,o,a,input);}
     tr2_hazards_tick(l,w,a);
-    tr2_inventory_reward(w,a);
-    /* AboveWater 4275d4/4276ed still runs LaraGun for the boat rider. */
+    /* AboveWater calls LaraGun before TestTriggers (4276d7/4276e2).
+       The boat rider also runs LaraGun (4276ed). */
+    if(look && look->active)w->camera_active=TR2_CAMERA_LOOK;
     if(w->vehicle<0 || ((uint32_t)w->vehicle<w->count && w->objects[w->vehicle].id==14))tr2_combat_view_tick(l,w,a,input,look);
+    Tr2Height h;if(w->vehicle<0 && tr2_query(l,a->x,a->y,a->z,a->room,&h,NULL))tr2_world_trigger(l,w,a,h.trigger,0);
+    tr2_inventory_reward(w,a);
     for(uint32_t i=0;i<w->count;i++)tr2_enemy_tick(l,w,(int)i,a);
     if(w->assault_active)w->assault_ticks++;
     if(w->effect==28){w->assault_active=w->assault_visible=0;}
@@ -501,7 +535,7 @@ void tr2_world_camera(const Tr2Level *l,Tr2World *w,const Tr2Actor *a,Tr2Camera 
         scripted=tr2_scripted_look(l,a,target,look);
         if(scripted){target->control.flags|=64;look->active=1;}
     }
-    if(w->camera_active && (!look || !look->active) && (uint32_t)w->camera_index<l->cameras.count){
+    if((w->camera_active==TR2_CAMERA_FIXED || w->camera_active==TR2_CAMERA_HEAVY) && (!look || !look->active) && (uint32_t)w->camera_index<l->cameras.count){
         const Tr2Actor *target=(uint32_t)w->camera_target<w->count?&w->objects[w->camera_target].pose:a;
         int explicit_target=target!=a;
         int b[6],y=target->y-762;

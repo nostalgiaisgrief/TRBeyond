@@ -94,10 +94,11 @@ int tr2_level_use(int item,int request){
     if(result==116)tr2_home_menu_sound(result);
     return result;
 }
-void tr2_quick_weapon(int item){
-    if(!level || world.cinematic_active || actor.extra_animation || actor.control.health<=0)return;
-    if(tr2_level_use(item,0))
-        quick_draw=!actor.gun_status && world.combat->weapon==world.combat->requested;
+int tr2_quick_weapon(int item){
+    if(!level || world.cinematic_active || actor.extra_animation || actor.control.health<=0)return 0;
+    if(!tr2_level_use(item,0))return 0;
+    quick_draw=!actor.gun_status && world.combat->weapon==world.combat->requested;
+    return 1;
 }
 void tr2_level_sunset(int enabled){level->sunset=enabled;}
 void tr2_level_rewards(const int rewards[27]){memcpy(world.rewards,rewards,sizeof world.rewards);}
@@ -221,7 +222,7 @@ static Tr2World render_light_world;
 static Tr2Hazards render_light_hazards;
 static Tr2DynamicLight render_lights[2][10];
 static int render_light_count[2];
-static void render_capture(void);
+static void render_capture(int advance_hair);
 static void update_eye(void);
 static size_t render_darts(void){return 1+world.count;}
 static size_t render_fragments(void){return render_darts()+TR2_MAX_DARTS;}
@@ -243,10 +244,29 @@ static int render_sample(TombRenderTrack *track,int node,int identity){
     float matrix[16];if(!tomb_render_sample(track,render_tick,node,identity,render_alpha,matrix))return 0;
     glLoadMatrixd(render_view);glMultMatrixf(matrix);return 1;
 }
+static int braid_coordinate(const float *matrix,int axis,int x,int y,int z){
+    return (int)lroundf(matrix[12+axis]+matrix[axis]*x+matrix[4+axis]*y+matrix[8+axis]*z);
+}
 static void braid_update(void){
     const uint8_t *model=tr2_model(level,2);if(!model)return;
     Tr2Sphere body[5];int anchor[3],bones[6][3];
-    if(!tr2_hair_samples(level,&actor,&look,anchor,body))return;
+    const TombRenderTrack *pose=&render_entries[0].pose;
+    const uint8_t *lara=tr2_model(level,0);
+    if(!lara || tr2_u16(lara+4)<15)return;
+    /* Keep TR2's five collision spheres, including the shared upper-arm
+       mesh, but place them on the same pose as the rendered head. */
+    static const int joints[]={0,7,14,8,11},meshes[]={0,7,14,8,8};
+    for(int i=0;i<5;i++){
+        const TombRenderNode *node=pose->nodes+joints[i];
+        if(node->tick!=render_tick)return;
+        unsigned mesh_index=tr2_u16(lara+6)+meshes[i];
+        const uint8_t *mesh=level->mesh_data.data+tr2_u32(level->mesh_offsets.data+mesh_index*4);
+        int x=tr2_i16(mesh),y=tr2_i16(mesh+2),z=tr2_i16(mesh+4);
+        body[i]=(Tr2Sphere){braid_coordinate(node->world,0,x,y,z),braid_coordinate(node->world,1,x,y,z),
+            braid_coordinate(node->world,2,x,y,z),tr2_i16(mesh+6)};
+        if(i>=3)body[i].radius=body[i].radius*3/2;
+    }
+    for(int j=0;j<3;j++)anchor[j]=braid_coordinate(pose->nodes[14].world,j,0,TR2_HAIR_HEAD_Y,TR2_HAIR_HEAD_Z);
     unsigned tree=tr2_u32(model+8);
     for(int i=0;i<6;i++)for(int j=0;j<3;j++)bones[i][j]=tr2_i32(level->trees.data+(tree+i*4+1+j)*4);
     memcpy(hair_state.point[0],anchor,sizeof anchor);
@@ -272,10 +292,24 @@ static void braid_update(void){
 }
 static void braid(void){
     const uint8_t *model=tr2_model(level,2);if(!model || !hair_state.ready)return;
+    float segments[TOMB_RENDER_NODES][16],head[16],offset[3]={0};
+    uint64_t valid=0;
+    if(render_entries){
+        valid=tomb_render_sample_all(&render_entries[render_hair()].pose,render_tick,render_alpha,segments);
+        const TombRenderTrack *lara=&render_entries[0].pose;
+        if((valid&1) && tomb_render_sample(lara,render_tick,14,lara->nodes[14].identity,render_alpha,head)){
+            /* Keep the root attached to the head between simulation ticks. */
+            for(int j=0;j<3;j++)offset[j]=head[12+j]+head[4+j]*TR2_HAIR_HEAD_Y+head[8+j]*TR2_HAIR_HEAD_Z-segments[0][12+j];
+        }
+    }
     for(int i=0;i<6;i++){
-        glPushMatrix();glTranslated(hair_state.point[i][0],hair_state.point[i][1],hair_state.point[i][2]);
-        glRotated(hair_state.yaw[i]*(360.0/65536),0,1,0);glRotated(hair_state.pitch[i]*(360.0/65536),1,0,0);
-        if(render_entries)render_sample(&render_entries[render_hair()].pose,i,tr2_u16(model+6)+i);
+        glPushMatrix();
+        if(valid&(UINT64_C(1)<<i)){
+            glLoadMatrixd(render_view);glTranslatef(offset[0],offset[1],offset[2]);glMultMatrixf(segments[i]);
+        }else{
+            glTranslated(hair_state.point[i][0],hair_state.point[i][1],hair_state.point[i][2]);
+            glRotated(hair_state.yaw[i]*(360.0/65536),0,1,0);glRotated(hair_state.pitch[i]*(360.0/65536),1,0,0);
+        }
         draw_mesh(tr2_u16(model+6)+i);glPopMatrix();
     }
 }
@@ -293,11 +327,10 @@ static int placement_shade(const Tr2Room *room,const uint8_t *shades){
     if(!room->light_mode)return first;
     return first+(tr2_i16(shades+2)-first)*tr2_room_light_phase(level,room,light_phase)/31;
 }
-static void object_light(int room,int x,int y,int z,int shade){
+static void object_light_at_depth(int room,int x,int y,int z,int shade,int depth){
     for(int k=0;k<8;k++)glDisable(GL_LIGHT0+k);
     const Tr2Room *r=room>=0 && (uint32_t)room<level->room_count?level->rooms+room:NULL;
     Tr2Light light={0,0,{0,0,0}};
-    int depth=fog_depth(x,y,z);
     if(draw_distance_setting==DRAW_SMOOTH_FOG && world_fog){
         depth=0; /* Fog follows each transformed mesh vertex. */
         object_fog_depth=0;
@@ -325,6 +358,9 @@ static void object_light(int room,int x,int y,int z,int shade){
             glEnable(GL_LIGHT0+k);glLightfv(GL_LIGHT0+k,GL_DIFFUSE,diffuse);glLightfv(GL_LIGHT0+k,GL_POSITION,direction);
         }
     }
+}
+static void object_light(int room,int x,int y,int z,int shade){
+    object_light_at_depth(room,x,y,z,shade,fog_depth(x,y,z));
 }
 static void set_texture(const Tr2Level *assets,const GLuint *pages,uint16_t index){
     const uint8_t *p=assets->textures.data+texture_index(assets,index)*20;
@@ -370,6 +406,16 @@ static int water_surfaces_init(void){
     classify_water_surfaces();
     return 1;
 }
+static uint32_t room_vertex_color(const Tr2Room *room,unsigned vertex,const uint8_t *v,int x,int y,int z,int phase){
+    int shade=tr2_i16(v+6);
+    /* Root 4516ee uses the vertex effect index, not lighting2.
+       Table built at 44d8be: phase * (index-16) * 512 / 31. */
+    if(room->light_mode){int effect=tr2_u16(v+8)&31;if(effect<31)shade+=phase*(effect-16)*512/31;}
+    if(room->flags&1){unsigned index=room->vertices.count-vertex;int phase=(water_offsets[index&31]+(int)simulation_ticks)&31;shade+=tr2_asr(tr2_sin(phase*2048)*768,14);}
+    shade=tr2_dynamic_shade(&render_light_world,x,y,z,shade);
+    int depth=fog_depth(x,y,z);shade=!draw_distance_setting && depth>=20480?8191:fog_shade(shade,depth);
+    return tr2_shade_rgb(shade,camera_water || (room->flags&1));
+}
 static void room_faces(const Tr2Room *room,Tr2Span faces,int n){
     int phase=tr2_room_light_phase(level,room,light_phase);
     int wobble=!water_style && (((room->flags&1)!=0)!=camera_water);
@@ -405,14 +451,7 @@ static void room_faces(const Tr2Room *room,Tr2Span faces,int n){
         for(int j=0;j<n;j++){
             const uint8_t *v=room->vertices.data+tr2_u16(p+j*2)*12;
             int x=room->x+tr2_i16(v),y=tr2_i16(v+2),z=room->z+tr2_i16(v+4);
-            int shade=tr2_i16(v+6);
-            /* Root 4516ee uses the vertex effect index, not lighting2.
-               Table built at 44d8be: phase * (index-16) * 512 / 31. */
-            if(room->light_mode){int effect=tr2_u16(v+8)&31;if(effect<31)shade+=phase*(effect-16)*512/31;}
-            if(room->flags&1){unsigned index=room->vertices.count-tr2_u16(p+j*2);int phase=(water_offsets[index&31]+(int)simulation_ticks)&31;shade+=tr2_asr(tr2_sin(phase*2048)*768,14);}
-            shade=tr2_dynamic_shade(&render_light_world,x,y,z,shade);
-            int depth=fog_depth(x,y,z);shade=!draw_distance_setting && depth>=20480?8191:fog_shade(shade,depth);
-            uint32_t rgb=tr2_shade_rgb(shade,camera_water || (room->flags&1));
+            uint32_t rgb=room_vertex_color(room,tr2_u16(p+j*2),v,x,y,z,phase);
             glColor4ub((GLubyte)(rgb>>16),(GLubyte)(rgb>>8),(GLubyte)rgb,water_surface_pass?128:255);
             texcoord(level,texture,j);
             /* Keep real depth. Collapsing far vertices onto one eye-ray
@@ -573,6 +612,19 @@ static unsigned model_mesh(uint32_t id,unsigned start,unsigned i,int track){
     if(id==0 && world.combat->weapon==8 && i==13 && (world.combat->meshes&1)){const uint8_t *flare=tr2_model(level,9);if(flare)mesh=tr2_u16(flare+6)+i;}
     return mesh;
 }
+static void draw_flare_flame(int x,int y){
+    const uint8_t *flame=tr2_model(level,235);
+    if(!flame)return;
+    glPushAttrib(GL_LIGHTING_BIT);
+    glTranslatef(x,y,80);
+    glRotatef(-16380*(360.f/65536),1,0,0);
+    /* TR2 rotates around the flame mesh's local Y axis after pitching it. */
+    unsigned angle=((world.hazards->random_draw>>10)&32767)*2;
+    glRotatef(angle*(360.f/65536),0,1,0);
+    object_light(-1,0,0,0,2048);
+    draw_mesh(tr2_u16(flame+6));
+    glPopAttrib();
+}
 static void model(uint32_t id,int animation,double ticks,double x,double y,double z,double yaw,uint64_t mesh_mask,int item_pitch,int item_roll,int track){
     const uint8_t *m=tr2_model(level,id);if(!m)return;
     unsigned meshes=tr2_u16(m+4),start=tr2_u16(m+6);if(!meshes || meshes>64)return;
@@ -681,7 +733,7 @@ static void model(uint32_t id,int animation,double ticks,double x,double y,doubl
         if(!sampled && !ring_frame && render_entry)render_sample(&render_entry->pose,(int)i,(int)mesh);
         draw_mesh(mesh);
         if(id==0 && i==13 && world.combat->weapon==8 && (world.combat->meshes&1) && world.combat->arms[0].flash){
-            const uint8_t *flame=tr2_model(level,235);if(flame){glPushAttrib(GL_LIGHTING_BIT);object_light(-1,0,0,0,2048);glTranslatef(11,32,80);glRotatef(-16380*(360.f/65536),1,0,0);glRotatef((world.hazards->random_draw&65535)*(360.f/65536),0,0,1);draw_mesh(tr2_u16(flame+6));glPopAttrib();}
+            draw_flare_flame(11,32);
         }
         /* Root DrawGunFlash: pistol, automatic and Uzi hand flashes. */
         if(id==0 && i==10 && world.combat->weapon==5 && world.combat->arms[1].flash){
@@ -723,6 +775,16 @@ static int shadow_size(int id){
        (id>=36 && id<=39) || id==41 || id==43 || id==45 ||
        (id>=47 && id<=51) || id==53 || id==54)return 128;
     return 0;
+}
+/* DrawDummyItem (42a120) assignments for placed helpers in Tomb2.exe:
+   43bb3c/43bb5b, 43bc87, 43c6f1 and 43c72d..43c793.
+   Lara (object 0) has a separate drawing path. */
+static int dummy_draw_item(int id){
+    switch(id){
+    case 213: case 215: case 216: case 243: case 244: case 251:
+    case 253: case 257: case 258: case 262: case 264:return 1;
+    default:return 0;
+    }
 }
 #include "tr2_home_interpolation.h"
 static void draw_room(uint32_t i){
@@ -809,7 +871,7 @@ static void camera_matrix(void){
     for(int i=0;i<3;i++){m[4*i]=r[i];m[4*i+1]=u[i];m[4*i+2]=-f[i];m[12]-=r[i]*eye[i];m[13]-=u[i]*eye[i];m[14]+=f[i]*eye[i];}
     m[15]=1;glLoadIdentity();if(world.cinematic_active)glRotated(view_roll,0,0,1);glMultMatrixd(m);
 }
-static void sprite(int index,int x,int y,int z,int shade){
+static void sprite(int index,int x,int y,int z,uint32_t rgb){
     if((uint32_t)index>=level->sprites.count)return;
     const uint8_t *p=level->sprites.data+index*16;unsigned tile=tr2_u16(p);if(tile>=level->tile_count)return;
     /* Root 40c030/40b6a0 projects a screen rectangle at one shared depth.
@@ -822,7 +884,7 @@ static void sprite(int index,int x,int y,int z,int shade){
     int xs[4]={tr2_i16(p+8),tr2_i16(p+12),tr2_i16(p+12),tr2_i16(p+8)},ys[4]={tr2_i16(p+10),tr2_i16(p+10),tr2_i16(p+14),tr2_i16(p+14)};
     float u0=(p[2]+.5f)/256.f,v0=(p[3]+.5f)/256.f,u1=(p[2]+tr2_u16(p+4)/256.f-.5f)/256.f,v1=(p[3]+tr2_u16(p+6)/256.f-.5f)/256.f;
     glPushAttrib(GL_ENABLE_BIT|GL_CURRENT_BIT);glDisable(GL_LIGHTING);glDisable(GL_CULL_FACE);glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glBindTexture(GL_TEXTURE_2D,textures[tile]);
-    uint32_t rgb=tr2_shade_rgb(fog_shade(shade,fog_depth(x,y,z)),camera_water);glColor3ub((GLubyte)(rgb>>16),(GLubyte)(rgb>>8),(GLubyte)rgb);
+    glColor3ub((GLubyte)(rgb>>16),(GLubyte)(rgb>>8),(GLubyte)rgb);
     glPushMatrix();glLoadIdentity();
     glBegin(GL_QUADS);for(int i=0;i<4;i++){glTexCoord2f(i==0 || i==3?u0:u1,i<2?v0:v1);glVertex3d(cx+xs[i],cy-ys[i],cz);}glEnd();glPopMatrix();glPopAttrib();
 }
@@ -938,7 +1000,9 @@ static void ground_shadow(const Tr2Actor *a,int id){
     if(render_entry && render_entry->root.tick==render_tick)for(int i=0;i<6;i++)bounds[i]=(int)lround(render_entry->bounds[0][i]+render_alpha*(render_entry->bounds[1][i]-render_entry->bounds[0][i]));
     tr2_shadow_points(bounds,size,points);
     glPushAttrib(GL_ENABLE_BIT|GL_COLOR_BUFFER_BIT|GL_DEPTH_BUFFER_BIT|GL_CURRENT_BIT|GL_POLYGON_BIT);
-    glDisable(GL_TEXTURE_2D);glDisable(GL_LIGHTING);glDisable(GL_ALPHA_TEST);glDisable(GL_CULL_FACE);
+    glDisable(GL_TEXTURE_2D);glDisable(GL_LIGHTING);glDisable(GL_ALPHA_TEST);
+    /* TR2 rejects the underside by projected winding (40bd10, 40808a). */
+    glEnable(GL_CULL_FACE);glCullFace(GL_BACK);glFrontFace(GL_CW);
     glEnable(GL_BLEND);glBlendFunc(GL_SRC_ALPHA,GL_ONE_MINUS_SRC_ALPHA);glDepthMask(GL_FALSE);
     /* Hardware polygon type 13 carries alpha 0x80 (40b1d0). */
     glEnable(GL_POLYGON_OFFSET_FILL);glPolygonOffset(-1,-1);glColor4f(0,0,0,128.f/255.f);
@@ -1012,12 +1076,19 @@ static void render(void){
        4019e0 resets polygon clipping to the full viewport. A static mesh can
        cross its owning room's portal bounds (e.g. Home's stair railings). */
     glDisable(GL_SCISSOR_TEST);
+    /* TR2 submits room geometry before its static meshes (41961a, 41977c)
+       and accepts equal depth. Room vertices and static vertices take
+       different transform paths here, so a shared plane can round apart. */
+    glPushAttrib(GL_POLYGON_BIT);
+    glEnable(GL_POLYGON_OFFSET_FILL);
+    glPolygonOffset(0,-4);
     for(uint32_t i=0;i<level->room_count;i++)if(!alternate[i] && visible[i])room_statics(i);
+    glPopAttrib();
     glEnable(GL_SCISSOR_TEST);
     for(uint32_t i=0;i<level->room_count;i++)if(!alternate[i] && visible[i]){
         room_scissor(i);
         const Tr2Room *r=level->rooms+i;
-        for(uint32_t j=0;j<r->sprites.count;j++){const uint8_t *s=r->sprites.data+j*4;const uint8_t *v=r->vertices.data+tr2_u16(s)*12;sprite(tr2_u16(s+2),r->x+tr2_i16(v),tr2_i16(v+2),r->z+tr2_i16(v+4),tr2_i16(v+6));}
+        for(uint32_t j=0;j<r->sprites.count;j++){const uint8_t *s=r->sprites.data+j*4;const uint8_t *v=r->vertices.data+tr2_u16(s)*12;int x=r->x+tr2_i16(v),y=tr2_i16(v+2),z=r->z+tr2_i16(v+4);sprite(tr2_u16(s+2),x,y,z,room_vertex_color(r,tr2_u16(s),v,x,y,z,tr2_room_light_phase(level,r,light_phase)));}
     }
     glDisable(GL_SCISSOR_TEST);
     for(uint32_t i=0;i<world.count;i++){
@@ -1026,11 +1097,9 @@ static void render(void){
         const Tr2Object *o=world.objects+i;const Tr2Actor *a=&o->pose;
         if(o->listed_room<0 || (o->flags&0x8000))continue;
         if(tr2_pickup_id(o->id) && (o->status==2 || o->status==3))continue;
-        /* Original setup assigns DrawDummyItem (0x42a120, a bare RET)
-           to these helpers at 0x43bc87 and 0x43c752. Their placeholder
-           mesh offsets alias Lara's hips; they are not visible props. */
-        if(o->id==243 || o->id==253 || o->id==257)continue;
-        if(!render_visible_entry(1+i,a->room,visible))continue;
+        if(dummy_draw_item(o->id))continue;
+        int door=o->id>=106 && o->id<=113;
+        if(door?!visible[o->listed_room]:!render_visible_entry(1+i,a->room,visible))continue;
         if(o->status==3)continue;
         int spr=sprite_index(o->id);if(spr>=0){
             /* DrawSpriteItem 4199c0 uses the placed item's two shades via
@@ -1040,7 +1109,7 @@ static void render(void){
             if(i<level->items.count){const uint8_t *item=level->items.data+i*24;shade=tr2_i16(item+18);
                 if(level->rooms[a->room].light_mode)shade+=(tr2_i16(item+20)-shade)*tr2_room_light_phase(level,level->rooms+a->room,light_phase)/31;}
             shade=tr2_dynamic_shade(&render_light_world,a->x,a->y,a->z,shade);
-            sprite(spr,a->x,a->y,a->z,shade);continue;
+            sprite(spr,a->x,a->y,a->z,tr2_shade_rgb(fog_shade(shade,fog_depth(a->x,a->y,a->z)),camera_water));continue;
         }
         const uint8_t *animation=level->animations.data+a->control.animation*32;
         render_entry=render_entries?render_entries+1+i:NULL;
@@ -1053,9 +1122,19 @@ static void render(void){
             const uint8_t *shades=level->items.data+i*24+18;
             if(tr2_i16(shades)>=0)shade=placement_shade(level->rooms+a->room,shades);
         }
-        object_light(a->room,light_x,shade>=0?light_y:light_y-512,light_z,shade);
+        int depth=fog_depth(light_x,light_y,light_z);
+        if(shade<0){
+            int offset[3];tr2_object_light_offset(level,a,offset);
+            light_x+=offset[0];light_y+=offset[1];light_z+=offset[2];
+        }
+        object_light_at_depth(a->room,light_x,light_y,light_z,shade,depth);
         model_creature=world.creatures+i;
+        /* A door frame can lie in the plane of the adjoining room wall.
+           TR2 shows the door at the Venice ladder. Bias depth toward the
+           camera without increasing the offset at grazing angles. */
+        if(door){glPushAttrib(GL_POLYGON_BIT);glEnable(GL_POLYGON_OFFSET_FILL);glPolygonOffset(0,-32);}
         model(o->id==13 && o->snow.drive.armed?51u:(uint32_t)o->id,a->control.animation,a->control.frame-tr2_i16(animation+16),a->x,a->y,a->z,a->yaw*(360.0/65536),tr2_object_mesh_mask(o),a->pitch,a->control.roll,(o->id==13 || o->id==51)?o->effect_counter:0);model_creature=NULL;
+        if(door)glPopAttrib();
         if(o->id==22 && o->effect_counter< -100){
             render_entry=NULL;
             for(int id=218;id<=219;id++){
@@ -1093,8 +1172,9 @@ static void render(void){
                 continue;
             }
             glPushMatrix();glTranslated(a->x,a->y,a->z);glRotated(a->yaw*(360.0/65536),0,1,0);glRotated(a->pitch*(360.0/65536),1,0,0);glRotated(a->control.roll*(360.0/65536),0,0,1);if(render_entries)render_sample(&render_entries[render_darts()+i].root,0,d->id);draw_mesh(tr2_u16(m+6)+(assets==level?0:level->mesh_offsets.count));
-            if(d->id==152 && ((uint16_t)d->timer&32768)){const uint8_t *flame=tr2_model(level,235);if(flame){object_light(-1,0,0,0,2048);glTranslatef(-6,6,80);glRotatef(-16380*(360.f/65536),1,0,0);glRotatef((world.hazards->random_draw&65535)*(360.f/65536),0,0,1);draw_mesh(tr2_u16(flame+6));}}glPopMatrix();}
-        for(int i=0;i<TR2_MAX_EFFECTS;i++){const Tr2Fragment *f=world.hazards->effects+i;if(!f->active || !render_visible_entry(render_effects()+i,f->room,visible))continue;if(f->object==240 || f->object==245 || f->object==247){const uint8_t *flash=tr2_model(level,f->object);if(flash){object_light(-1,0,0,0,f->shade);glPushMatrix();glTranslatef(f->x,f->y,f->z);glRotatef(f->yaw*(360.f/65536),0,1,0);glRotatef(f->pitch*(360.f/65536),1,0,0);glRotatef(f->roll*(360.f/65536),0,0,1);if(render_entries)render_sample(&render_entries[render_effects()+i].root,0,f->object);draw_mesh(tr2_u16(flash+6));glPopMatrix();}continue;}int base=sprite_index(f->object);if(base>=0){int x=f->x,y=f->y,z=f->z;render_particle_position(render_effects()+i,f->object,&x,&y,&z);sprite(base-f->mesh,x,y,z,f->object==90?f->shade:0);}}
+            if(d->id==152 && ((uint16_t)d->timer&32768))draw_flare_flame(-6,6);
+            glPopMatrix();}
+        for(int i=0;i<TR2_MAX_EFFECTS;i++){const Tr2Fragment *f=world.hazards->effects+i;if(!f->active || !render_visible_entry(render_effects()+i,f->room,visible))continue;if(f->object==240 || f->object==245 || f->object==247){const uint8_t *flash=tr2_model(level,f->object);if(flash){object_light(-1,0,0,0,f->shade);glPushMatrix();glTranslatef(f->x,f->y,f->z);glRotatef(f->yaw*(360.f/65536),0,1,0);glRotatef(f->pitch*(360.f/65536),1,0,0);glRotatef(f->roll*(360.f/65536),0,0,1);if(render_entries)render_sample(&render_entries[render_effects()+i].root,0,f->object);draw_mesh(tr2_u16(flash+6));glPopMatrix();}continue;}int base=sprite_index(f->object);if(base>=0){int x=f->x,y=f->y,z=f->z;render_particle_position(render_effects()+i,f->object,&x,&y,&z);sprite(base-f->mesh,x,y,z,tr2_shade_rgb(fog_shade(f->shade,fog_depth(x,y,z)),camera_water));}}
     }
     const uint8_t *anim=level->animations.data+actor.control.animation*32;
     int light_x=actor.x,light_y=actor.y,light_z=actor.z;render_particle_position(0,0,&light_x,&light_y,&light_z);
@@ -1251,7 +1331,7 @@ static int open_session(const char *root,const char *filename,int level_index,co
         }
     }
     level->weapon_donor=weapon_assets;
-    update_eye();init_geometry();braid_update();
+    update_eye();init_geometry();
     render_count=render_hair()+2;render_entries=calloc(render_count,sizeof *render_entries);
     if(!render_entries){tr2_home_close();return 0;}tr2_home_interpolation_reset();
     /* Sound availability does not prevent rendering or controlling Lara. */
@@ -1286,7 +1366,7 @@ void tr2_home_update(double seconds,uint32_t input){
             for(uint32_t i=0;i<world.count;i++){Tr2Object *o=world.objects+i;if(o->id>=123 && o->id<=132){cut_actor(&o->pose,o->id,o);tr2_world_room(&world,(int)i,o->pose.room);}
                 else if(o->active && o->id==253)tr2_emitter_tick(level,&world,o,(int)i);}
             tr2_hazards_tick(level,&world,&actor);
-            tr2_world_camera(level,&world,&actor,&camera,&look);camera.position.room=(int16_t)cut_room(camera.position.x,camera.position.y,camera.position.z,camera.position.room);simulation_ticks++;braid_update();render_capture();
+            tr2_world_camera(level,&world,&actor,&camera,&look);camera.position.room=(int16_t)cut_room(camera.position.x,camera.position.y,camera.position.z,camera.position.room);simulation_ticks++;render_capture(1);
             if(world.cinematic_frame+1>=(int)level->cinematic.count)world.finished=1;
             accumulator-=1.0/30;continue;
         }
@@ -1297,7 +1377,7 @@ void tr2_home_update(double seconds,uint32_t input){
         /* ExtraLaraControl 428830 resets the death counter before AnimateLara. */
         int hold_creature_death=actor.extra_animation && (actor.control.current==2 || actor.control.current==3) &&
             actor.control.frame<tr2_i16(level->animations.data+actor.control.animation*32+18)-30;
-        if(quick_draw){movement|=32;quick_draw=0;}
+        if(quick_draw){movement|=TR2_DRAW_SELECTED;quick_draw=0;}
         tr2_player_tick(level,&actor,&water,movement);tr2_world_view_tick(level,&world,&actor,movement,&look);
         autosave_inventory(0);
         if(level->custom.switch_pending && !actor.extra_animation && actor.control.current!=40 && actor.control.current!=41){
@@ -1316,7 +1396,7 @@ void tr2_home_update(double seconds,uint32_t input){
         if(world.assault_scores.total!=finishes)scores_save();
         tr2_world_camera(level,&world,&actor,&camera,&look);tr2_flip_effect_tick(&world,&actor,camera.target.y);
         tr2_audio_tick(level,&actor,&world);
-        simulation_ticks++;hair_random=hair_random*0x41c64e6du+12345;light_phase=(int)((hair_random>>16)&31);braid_update();render_capture();
+        simulation_ticks++;hair_random=hair_random*0x41c64e6du+12345;light_phase=(int)((hair_random>>16)&31);render_capture(1);
         accumulator-=1.0/30;
     }
     render_alpha=fmax(0,fmin(1,accumulator*30));update_eye();tr2_audio_pump();
@@ -1333,22 +1413,24 @@ static void hud_sprite(int index,int x,int y,int scale){
     glTexCoord2f(ue,ve);glVertex2i(x1,y1);glTexCoord2f(u,ve);glVertex2i(x0,y1);glEnd();
 }
 
-static void sprite_hud(void){
+enum { HUD_HEIGHT = 480, HUD_BASE_WIDTH = 640 };
+
+static void sprite_hud(int hud_width){
     int active=world.assault_visible;
     for(int i=0;i<12;i++)active|=pickup_icons[i].ticks;
     if(!active)return;
     glPushAttrib(GL_ENABLE_BIT|GL_CURRENT_BIT);glDisable(GL_DEPTH_TEST);glDisable(GL_LIGHTING);glDisable(GL_CULL_FACE);
     glEnable(GL_TEXTURE_2D);glEnable(GL_ALPHA_TEST);glAlphaFunc(GL_GREATER,.5f);glColor3f(1,1,1);
-    glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glOrtho(0,width,height,0,-1,1);
+    glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glOrtho(0,hud_width,HUD_HEIGHT,0,-1,1);
     glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
     if(world.assault_visible){
         Tr2TimerGlyph glyphs[32];int first=sprite_index(261);
-        int count=tr2_assault_glyphs((unsigned)world.assault_ticks,width,glyphs);
+        int count=tr2_assault_glyphs((unsigned)world.assault_ticks,hud_width,glyphs);
         if(first>=0)for(int i=0;i<count;i++)hud_sprite(first+glyphs[i].sprite,glyphs[i].x,glyphs[i].y,65536);
     }
-    int step=width/10,x=width-step,y=height-step,drawn=0;
+    int step=HUD_BASE_WIDTH/10,x=hud_width-step,y=HUD_HEIGHT-step,drawn=0;
     for(int i=0;i<12;i++,x-=step)if(pickup_icons[i].ticks){
-        if(drawn==4 || drawn==8){x=width-step;y-=2*step/3;}
+        if(drawn==4 || drawn==8){x=hud_width-step;y-=2*step/3;}
         hud_sprite(pickup_icons[i].sprite,x,y,12288);
         drawn++;
     }
@@ -1362,19 +1444,19 @@ static void bar_line(int x0,int y0,int x1,int y1,int red,int green,int blue){
     int left=x0<x1?x0:x1,top=y0<y1?y0:y1,right=x0>x1?x0:x1,bottom=y0>y1?y0:y1;
     glBegin(GL_QUADS);glVertex2i(left,top);glVertex2i(right+1,top);glVertex2i(right+1,bottom+1);glVertex2i(left,bottom+1);glEnd();
 }
-static void status_bar(int amount,int air){
-    if(amount<0)return;int x=air?width-110:8;
+static void status_bar(int amount,int air,int hud_width){
+    if(amount<0)return;int x=air?hud_width-110:8;
     for(int y=7;y<=13;y++)bar_line(x-2,y,x+101,y,0,0,0);
     bar_line(x-2,14,x+102,14,64,64,64);bar_line(x+102,6,x+102,14,64,64,64);
     bar_line(x-2,6,x+102,6,255,255,255);bar_line(x-2,6,x-2,14,255,255,255);
     if(amount>0)for(int y=8;y<=12;y++)bar_line(x,y,x+amount,y,air?(y==9?255:0):255,air?(y==9?255:0):(y==9?128:0),air?255:0);
 }
-static void status_bars(void){
+static void status_bars(int hud_width){
     glPushAttrib(GL_ENABLE_BIT|GL_CURRENT_BIT);glDisable(GL_DEPTH_TEST);glDisable(GL_TEXTURE_2D);glDisable(GL_LIGHTING);glDisable(GL_CULL_FACE);glDisable(GL_BLEND);glDisable(GL_ALPHA_TEST);
-    glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glOrtho(0,width,height,0,-1,1);glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
+    glMatrixMode(GL_PROJECTION);glPushMatrix();glLoadIdentity();glOrtho(0,hud_width,HUD_HEIGHT,0,-1,1);glMatrixMode(GL_MODELVIEW);glPushMatrix();glLoadIdentity();
     int flash=(simulation_ticks/6)%2==0;
-    status_bar(tr2_health_bar(actor.control.health,health_timer,actor.gun_status,flash),0);
-    status_bar(tr2_air_bar(water.air,actor.control.water_status,flash),1);
+    status_bar(tr2_health_bar(actor.control.health,health_timer,actor.gun_status,flash),0,hud_width);
+    status_bar(tr2_air_bar(water.air,actor.control.water_status,flash),1,hud_width);
     glPopMatrix();glMatrixMode(GL_PROJECTION);glPopMatrix();glMatrixMode(GL_MODELVIEW);glPopAttrib();
 }
 void tr2_home_render(int w,int h){
@@ -1386,10 +1468,12 @@ void tr2_home_render(int w,int h){
     render();
     if(width!=w || height!=h)tomb_render_enlarge(&resolution_surface,width,height,w,h);
     width=w;height=h;render_pixel_scale=1;glViewport(0,0,w,h);if(!cutscene){
-        sprite_hud();status_bars();
+        int hud_width=(int)lround((double)w*HUD_HEIGHT/h);
+        if(hud_width<1)hud_width=1;
+        sprite_hud(hud_width);status_bars(hud_width);
         int weapon=world.combat->weapon;
         if(actor.gun_status==4 && weapon>=2 && weapon<=7)
-            tr2_draw_ammo(level,textures,w,h,world.combat->ammo[weapon]/(weapon==4?6:1));
+            tr2_draw_ammo(level,textures,hud_width,HUD_HEIGHT,world.combat->ammo[weapon]/(weapon==4?6:1));
     }
     tomb_render_center(&aspect_surface,w,h,full_w,full_h);
 }
@@ -1513,7 +1597,7 @@ int tr2_home_water_test(void){
     camera.position=(Tr2Position){actor.x,surface-1024,actor.z-1024,actor.room,0};
     Tr2Sector sector;if(!tr2_find_sector(level,camera.position.x,camera.position.y,camera.position.z,actor.room,&sector))return 0;
     camera.position.room=(int16_t)sector.room;camera.target=(Tr2Position){actor.x,surface,actor.z,actor.room,0};camera.shift=0;
-    update_eye();braid_update();tr2_home_interpolation_reset();tr2_home_render(width,height);
+    update_eye();hair_state.ready=0;tr2_home_interpolation_reset();tr2_home_render(width,height);
     int ok=sprite_index(230)>=0 && glGetError()==GL_NO_ERROR;
     fprintf(stderr,"TR2 water entry: ten surface splash sprites, no repeat while submerged, render: %s\n",ok?"PASS":"FAIL");return ok;
 }
@@ -1742,10 +1826,30 @@ static int venice_water_matches(unsigned expected_faces){
     }
     return glGetError()==GL_NO_ERROR;
 }
+static int venice_waterfall_test(void){
+    Tr2Hazards hazards={0};
+    Tr2World test_world=world;test_world.hazards=&hazards;
+    int sources=0;
+    for(uint32_t i=0;i<world.count;i++){
+        const Tr2Object *o=world.objects+i;
+        if(o->id!=244)continue;
+        if(!o->active || o->pose.room!=43 || sources>=3)return 0;
+        Tr2Actor source=o->pose,observer=source;source.event_count=0;
+        observer.x+=10241;
+        tr2_waterfall_tick(level,&test_world,&source,&observer);
+        if(source.event_count || hazards.effects[sources].active)return 0;
+        observer.x--;
+        tr2_waterfall_tick(level,&test_world,&source,&observer);
+        Tr2Fragment *f=hazards.effects+sources++;
+        if(source.event_count!=1 || source.event_value[0]!=79 || !f->active || f->object!=230 ||
+           f->room!=source.room || f->y!=source.y || abs(f->x-source.x)>512 || abs(f->z-source.z)>512)return 0;
+    }
+    return sources==3;
+}
 int tr2_venice_water_test(void){
     int saved_style=water_style;
     water_style=1;
-    int ok=venice_water_matches(19);
+    int ok=venice_waterfall_test() && venice_water_matches(19);
     const Tr2Actor *lever=&world.objects[48].pose;
     actor.room=lever->room;actor.yaw=actor.move_angle=lever->yaw;actor.y=lever->y;
     actor.x=lever->x+tr2_asr(400*tr2_sin(lever->yaw),14);
@@ -1868,7 +1972,7 @@ int tr2_home_weapon_test(void){
                 actor.event_count=0;
                 int before=world.combat->shots;
                 tr2_combat_view_tick(level,&world,&actor,tick<45?0:TR2_ACTION,&look);
-                render_capture();
+                render_capture(0);
                 if(!weapon_pose_test())return 0;
                 alternate_shot=world.combat->rifle.control.current==8 && world.combat->shots>before;
             }
@@ -1967,7 +2071,7 @@ int tr2_final_level_test(int index){
                 }
             }
             if(timer==-101 && d->id==22 && d->pose.y==d->lift_origin+10){
-                render_capture();tr2_home_render(width,height);revealed=glGetError()==GL_NO_ERROR;
+                render_capture(0);tr2_home_render(width,height);revealed=glGetError()==GL_NO_ERROR;
             }
         }
         if(!faded || !revealed)return 0;
@@ -2116,12 +2220,15 @@ int tr2_bartoli_detonator_test(int finish){
         return world.inventory_request>=2 && !actor.extra_animation;
     }
     if(!actor.extra_animation || world.inventory->count[194])return 0;
-    int explosions=0;
+    Tr2Object *jade=test_placed(191);
+    if(!jade)return 0;
+    int secrets=world.inventory->secrets,explosions=0;
     for(int i=0;i<180;i++){
         tr2_home_update(1.0/30,0);
         for(int e=0;e<det->pose.event_count;e++)if(det->pose.event_kind[e]==7 && det->pose.event_value[e]==105)explosions++;
     }
-    return explosions==1 && world.flip_status && !actor.extra_animation && !actor.gun_status;
+    return explosions==1 && world.flip_status && !actor.extra_animation && !actor.gun_status &&
+        jade->status==3 && jade->listed_room<0 && world.inventory->secrets==secrets;
 }
 int tr2_wall_effect_test(void){
     Tr2Object *rex=test_placed(214);

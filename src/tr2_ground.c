@@ -178,7 +178,9 @@ void tr2_ground_tick(const Tr2Level *l,Tr2Actor *a,uint32_t input){
     int rate=a->control.turn_rate;a->control.turn_rate=(int16_t)(rate< -364?rate+364:rate>364?rate-364:0);a->yaw=tr2_word(a->yaw+a->control.turn_rate);
     if(!tr2_animate(l,a))return;
     for(int i=0;i<a->event_count;i++)if(a->event_kind[i]==6 && a->event_value[i]==0){a->yaw=tr2_word(a->yaw+32768);a->move_angle=tr2_word(a->move_angle+32768);}
-    c.flags=24;
+    /* The six TR2 ladder controls (42d8f0..42da34) clear object push and
+       hit reaction before AnimateLara and the room's object contacts. */
+    c.flags=(c.old_state>=56 && c.old_state<=61)?0:24;
     if(!tr2_player_object_contacts(l,a,input,&c))ground_collision(l,a,&c,input);
     Tr2Sector ref;if(tr2_find_sector(l,a->x,a->y-381,a->z,a->room,&ref))a->room=(int16_t)ref.room;
 }

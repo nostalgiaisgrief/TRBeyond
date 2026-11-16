@@ -7,6 +7,7 @@ enum { TR2_NO_HEIGHT=-32512 };
 typedef struct {int x,y,z,radius;} Tr2Sphere;
 typedef struct {int shade,divider,direction[3];} Tr2Light;
 typedef struct {int point[7][3],velocity[7][3];int16_t pitch[7],yaw[7];int ready;} Tr2Hair;
+enum { TR2_HAIR_HEAD_Y=-23, TR2_HAIR_HEAD_Z=-55 };
 typedef struct { int room,index; } Tr2Sector;
 typedef struct {int floor,ceiling,type,tilt_x,tilt_z;uint32_t trigger;} Tr2Height;
 typedef struct {
@@ -19,7 +20,7 @@ typedef struct {
 } Tr2Actor;
 typedef struct {int32_t x,y,z;int16_t room,pad;} Tr2Position;
 typedef struct {int16_t air,dive_count;} Tr2Water;
-typedef struct {int16_t yaw,pitch,torso_yaw,torso_pitch;int active;} Tr2Look;
+typedef struct {int16_t yaw,pitch,torso_yaw,torso_pitch;int active,blocked_next_tick;} Tr2Look;
 uint32_t tr2_look_input(Tr2Look *look,const Tr2Actor *actor,uint32_t input);
 typedef struct {
     int32_t sample[4][3],radius,positive,negative,ceiling_limit,shift[3],old[3];
@@ -43,6 +44,7 @@ int tr2_cos(int angle);
 int tr2_atan(int z,int x);
 int tr2_best_bounds(const Tr2Level *l,const Tr2Actor *a,int bounds[6]);
 void tr2_rotate_offset(int yaw,int pitch,const int vector[3],int out[3]);
+void tr2_object_light_offset(const Tr2Level *l,const Tr2Actor *actor,int out[3]);
 void tr2_hair_step(Tr2Hair *hair,const int bones[6][3],const Tr2Sphere body[5],int water_status,int water_height,int floor,int wind);
 int tr2_hair_samples(const Tr2Level *l,const Tr2Actor *a,const Tr2Look *look,int anchor[3],Tr2Sphere body[5]);
 int tr2_object_overlap(const Tr2Level *l,const Tr2Actor *o,const Tr2Actor *a,int radius);

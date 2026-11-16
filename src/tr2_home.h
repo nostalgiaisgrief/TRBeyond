@@ -11,7 +11,7 @@ int tr2_home_use_flare(void);
 #include "tr2_world.h"
 const Tr2World *tr2_level_world(void);
 void tr2_level_give(int id);
-void tr2_quick_weapon(int item);
+int tr2_quick_weapon(int item);
 int tr2_level_use(int item,int request);
 void tr2_level_sunset(int enabled);
 int tr2_level_keys_requested(void);

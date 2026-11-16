@@ -9,6 +9,8 @@ static int tr2_message_key(int key,uint32_t info){
  if(extended){if(scan==0x1c)return 0x6c; /* numpad Enter */
   if(scan==0x35)return 0x6f; /* numpad Divide */
  }else{
+  /* Tomb2.exe 44dce2 checks the physical top row, independently of layout. */
+  if(scan>=0x02 && scan<=0x08)return '1'+(int)scan-0x02;
   switch(scan){
   case 0x47:return 0x67;case 0x48:return 0x68;case 0x49:return 0x69;
   case 0x4b:return 0x64;case 0x4c:return 0x65;case 0x4d:return 0x66;
